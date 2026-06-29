@@ -14,7 +14,7 @@ from config import Config
 from pipeline import preprocess, segment, locate, features, decide
 
 POS = ("ray_ban_frame", "META")       # clean Meta frame shots  -> want META
-NEG = ("normal_glassess", "NORMAL")   # worn normal glasses     -> want NORMAL
+NEG = ("normal_frame", "NORMAL")      # clean normal frame shots -> want NORMAL
 
 
 def score(path, cfg):
@@ -23,7 +23,14 @@ def score(path, cfg):
     loc = locate.locate(fr.gray_eq, seg, cfg)
     feats = features.extract(fr, seg, loc, cfg)
     v = decide.decide(feats, cfg, seg=seg, shape=fr.gray.shape)
-    return v
+    return v, feats
+
+
+def _pcam(feats):
+    pL, pR = feats["L"].cam_prob, feats["R"].cam_prob
+    if pL is None or pR is None:
+        return "Pcam=n/a    "
+    return f"Pcam L={pL:.2f} R={pR:.2f}"
 
 
 def files_in(folder):
@@ -37,15 +44,15 @@ def main():
     pos_n = neg_n = 0
     print(f"\n=== POSITIVES {POS[0]} (want META) ===")
     for f in files_in(POS[0]):
-        v = score(f, cfg); pos_n += 1
+        v, feats = score(f, cfg); pos_n += 1
         meta = v.verdict == "META"; pos_meta += meta
-        print(f"  {v.verdict:7s} {max(v.score_left, v.score_right):.2f}  "
+        print(f"  {v.verdict:7s} {_pcam(feats)}  "
               f"{f.split('/')[-1]}  {'' if meta else '<-- MISS'}")
     print(f"\n=== NEGATIVES {NEG[0]} (want NORMAL) ===")
     for f in files_in(NEG[0]):
-        v = score(f, cfg); neg_n += 1
+        v, feats = score(f, cfg); neg_n += 1
         meta = v.verdict == "META"; neg_meta += meta
-        print(f"  {v.verdict:7s} {max(v.score_left, v.score_right):.2f}  "
+        print(f"  {v.verdict:7s} {_pcam(feats)}  "
               f"{f.split('/')[-1]}  {'<-- FALSE POS' if meta else ''}")
 
     print("\n--- summary ---")

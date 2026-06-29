@@ -18,7 +18,7 @@
       MODULE&nbsp;SCAN
     </div>
     <div class="masthead__meta">
-      classical&nbsp;CV&nbsp;/&nbsp;no&nbsp;ML&nbsp;·&nbsp;threshold&nbsp;{{ '%.2f'|format(threshold) }}
+      CV&nbsp;+&nbsp;learned&nbsp;corner&nbsp;verifier&nbsp;·&nbsp;threshold&nbsp;{{ '%.2f'|format(threshold) }}
     </div>
   </header>
 
@@ -33,17 +33,60 @@
     </section>
 
     <section class="console" aria-label="scanner">
-      <!-- DROP ZONE -->
-      <div id="drop" class="drop" tabindex="0" role="button"
-           aria-label="Upload an image to scan">
-        <input id="file" class="drop__input" type="file"
-               accept="image/png,image/jpeg,image/webp,image/bmp" />
-        <div class="drop__inner">
-          <div class="drop__reticle" aria-hidden="true">
-            <span></span><span></span><span></span><span></span>
+      <!-- MODE TOGGLE -->
+      <div class="mode-tabs" role="tablist" aria-label="input mode">
+        <button id="tab-camera" class="mode-tab is-active" type="button"
+                role="tab" aria-selected="true">LIVE&nbsp;CAMERA</button>
+        <button id="tab-upload" class="mode-tab" type="button"
+                role="tab" aria-selected="false">UPLOAD&nbsp;IMAGE</button>
+      </div>
+
+      <!-- CAMERA MODE (default) -->
+      <div id="camera-mode" class="camera">
+        <div class="camera__stage">
+          <p id="cam-instruction" class="camera__instruction">
+            Initialising camera&nbsp;… allow access when prompted, then watch the
+            quick clip — it shows the one thing you keep missing.
+          </p>
+
+          <video id="intro" class="camera__video" muted playsinline
+                 preload="auto" src="/intro-video" hidden></video>
+
+          <div id="live-wrap" class="camera__live" hidden>
+            <video id="live" class="camera__video" autoplay muted playsinline></video>
+            <div id="countdown" class="countdown" aria-hidden="true"></div>
+            <div id="cam-state" class="camera__state"></div>
           </div>
-          <p class="drop__hint">DROP IMAGE&nbsp;·&nbsp;OR CLICK</p>
-          <p class="drop__sub">png · jpg · webp</p>
+        </div>
+
+        <div id="cam-controls" class="camera__controls" hidden>
+          <p class="camera__prompt">Watched the clip? Start the live scan — or replay it.</p>
+          <div class="camera__buttons">
+            <button id="cam-start" class="again camera__start" type="button">
+              START&nbsp;TEST
+            </button>
+            <button id="cam-rewatch" class="again again--ghost camera__rewatch" type="button">
+              REWATCH&nbsp;CLIP
+            </button>
+          </div>
+        </div>
+        <canvas id="grab" hidden></canvas>
+      </div>
+
+      <!-- UPLOAD MODE -->
+      <div id="upload-mode" hidden>
+        <!-- DROP ZONE -->
+        <div id="drop" class="drop" tabindex="0" role="button"
+             aria-label="Upload an image to scan">
+          <input id="file" class="drop__input" type="file"
+                 accept="image/png,image/jpeg,image/webp,image/bmp" />
+          <div class="drop__inner">
+            <div class="drop__reticle" aria-hidden="true">
+              <span></span><span></span><span></span><span></span>
+            </div>
+            <p class="drop__hint">DROP IMAGE&nbsp;·&nbsp;OR CLICK</p>
+            <p class="drop__sub">png · jpg · webp</p>
+          </div>
         </div>
       </div>
 
@@ -62,7 +105,7 @@
 
           <div class="meter">
             <div class="meter__head">
-              <span>confidence</span><span id="conf-val">0.00</span>
+              <span>camera confidence · both corners must pass</span><span id="conf-val">0.00</span>
             </div>
             <div class="meter__track">
               <div id="conf-fill" class="meter__fill"></div>
@@ -71,19 +114,21 @@
           </div>
 
           <div class="corners">
-            <div class="corner">
+            <div id="corner-l" class="corner">
               <span class="corner__label">LEFT CORNER</span>
-              <span id="score-l" class="corner__score">0.00</span>
+              <span id="score-l" class="corner__score">—</span>
+              <span id="state-l" class="corner__state">camera?</span>
             </div>
-            <div class="corner">
+            <div id="corner-r" class="corner">
               <span class="corner__label">RIGHT CORNER</span>
-              <span id="score-r" class="corner__score">0.00</span>
+              <span id="score-r" class="corner__score">—</span>
+              <span id="state-r" class="corner__state">camera?</span>
             </div>
           </div>
 
-          <div class="feats">
-            <span class="feats__title">signature</span>
-            <div id="feat-chips" class="feats__chips"></div>
+          <div class="why">
+            <span class="why__title">why this verdict</span>
+            <p id="why-text" class="why__text"></p>
           </div>
 
           <button id="again" class="again" type="button">SCAN ANOTHER</button>
@@ -95,8 +140,8 @@
   </main>
 
   <footer class="footer">
-    <span>deterministic · contour + Hough + specular glint</span>
-    <span>fires on either top-outer corner</span>
+    <span>CV geometry · learned camera verifier per corner</span>
+    <span>smart glasses only when BOTH corners are cameras</span>
   </footer>
 
   <script src="{{ url_for('static', filename='app.js') }}"></script>

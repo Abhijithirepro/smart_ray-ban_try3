@@ -1,13 +1,18 @@
 # MODULE SCAN — Meta smart-glasses camera detector
 
-A small, transparent, **deterministic classical-CV** tool that decides whether a
-clean, roughly front-on photo of a pair of glasses is a pair of **Ray-Ban Meta /
-Ray-Ban Stories** smart glasses (which carry a small camera module in a
-top-outer corner of the frame) versus **normal eyeglasses**.
+A small, transparent tool that decides whether a clean, roughly front-on photo
+of a pair of glasses is a pair of **Ray-Ban Meta / Ray-Ban Stories** smart
+glasses (which carry a small camera module in a top-outer corner of the frame)
+versus **normal eyeglasses**.
 
-**No machine learning of any kind** — no neural nets, no trained classifiers, no
-Haar cascades. Only thresholding, contours, Hough circles, distance transforms
-and hand-written geometric heuristics.
+The geometry is classical CV — thresholding, contours, Hough circles, distance
+transforms, segmentation. But telling a *camera lens* apart from a *rounded
+frame corner* is a structural/semantic distinction that classical circle and
+darkness cues provably cannot make (both are "a dark circle in the corner"), so
+a **tiny, self-contained classifier** does that last step: a HOG descriptor over
+the corner crop feeds an L2-regularised logistic regression (pure numpy + the
+OpenCV HOG, no external ML dependency, weights in `models/camera_clf.npz`). It
+verifies each corner; the rest of the pipeline is unchanged.
 
 ---
 
@@ -89,6 +94,8 @@ the **annotated overlay** so you can see exactly what fired and where.
 
 ```
 preprocess → segment → locate → features → decide → (viz)
+                                    │
+                            camera_clf (per-corner P(camera))
 ```
 
 | module | does |
@@ -96,9 +103,14 @@ preprocess → segment → locate → features → decide → (viz)
 | `pipeline/preprocess.py` | load (OpenCV→Pillow fallback, flattens transparent PNGs onto white), canonical resize, grayscale + CLAHE + blur variants |
 | `pipeline/segment.py` | frame bbox + filled mask via inverse-Otsu → morphology → largest contour, with a Canny fallback and a sanity gate; flags whether an **isolated** frame was found |
 | `pipeline/locate.py` | derive a **generous top-outer search region** per side, relative to the frame bbox (scales with the frame, so near/far is handled) |
-| `pipeline/features.py` | per corner: gather circle / dark-blob / glint candidates, refine each to its local bezel, and pick the most **camera-like** one (bezel + central glint + dark core); emit the features |
-| `pipeline/decide.py` | per-corner weighted score → fire META if **either** corner clears the threshold; **domain gate**: abstain (NORMAL) if no isolated glasses frame was found |
-| `pipeline/viz.py` | annotated overlay (bbox, ROIs, candidate/chosen circles, glint pixels, scores) + features JSON |
+| `pipeline/features.py` | per corner: gather circle / dark-blob / glint candidates, refine each to its local bezel, pick the most **camera-like** one, emit the features, and attach the learned **`cam_prob`** for the corner crop |
+| `pipeline/camera_clf.py` | the learned verifier: corner crop → 32×32 (R mirrored to canonical) → illumination-normalise → HOG → standardise → logistic regression → `P(camera)` |
+| `pipeline/decide.py` | fire META iff **both** corners are cameras (`cam_prob ≥ cam_clf_thresh`; falls back to Hough-circle presence if no model file). **Domain gate**: abstain (NORMAL) if no isolated glasses frame was found. The old weighted score is kept for debug only |
+| `pipeline/viz.py` | annotated overlay (bbox, ROIs, candidate/chosen circles, glint pixels, per-corner `Pcam`) + features JSON |
+
+Retrain the verifier with `python3 train_camera_clf.py` (positives
+`ray_ban_frame/`, negatives `normal_frame/`); it prints leave-one-image-out CV
+and rewrites `models/camera_clf.npz`.
 
 All spatial parameters are **relative** to the detected frame (bbox width /
 height), not absolute pixels, so the detector is scale-invariant after the
@@ -125,14 +137,15 @@ python eval_separation.py
 
 | set | result |
 |-----|--------|
-| `ray_ban_frame/` (clean Meta frames, positives) | **6 / 9 META** |
-| `normal_glassess/` (worn normal glasses, negatives) | **19 / 19 NORMAL** (0 false positives) |
+| `ray_ban_frame/` (clean Meta frames, positives) | **9 / 9 META** |
+| `normal_frame/` (clean normal frames, negatives) | **10 / 10 NORMAL** (0 false positives) |
 
-- **Front-on Meta frames: 6 / 6 caught.**
-- The 3 misses are **off-angle views** (`al3`, `qt`, `mew`) where the camera is
-  foreshortened into an ellipse and the circular signature weakens (scores
-  0.55–0.59, just under the 0.60 threshold). These are outside the
-  "roughly front-on" operating condition and are a known, improvable limitation.
+Those are **fit** numbers (the verifier is trained on these same images). The
+honest generalisation estimate is the verifier's **leave-one-image-out CV: ~84 %**
+(printed by `train_camera_clf.py`) — with only 19 training images, treat that,
+not the 19/19, as the real-world expectation. Hardest cases: strongly
+**off-angle** Meta views and normal **cat-eye** frames whose corner mimics a
+module. More training images would tighten this.
 
 ---
 
@@ -140,14 +153,14 @@ python eval_separation.py
 
 - **Front-on is the operating condition.** Strongly angled / 3-quarter views may
   read NORMAL.
-- **Negatives are worn-on-face photos**, a different domain from the clean
-  positive frames. They're rejected mostly by the domain gate. A set of **clean
-  normal-frame product photos** (plain background, just the glasses) would let
-  the decision margin be calibrated properly against the real operating
-  condition — currently that margin is thin (front positives ≥ 0.64; the few
-  cleanly-segmented normals sit ≤ 0.55).
-- Heuristic and non-ML by design — inherently more brittle than a trained
-  detector. That trade-off is intentional.
+- **Tiny training set (19 images).** The verifier separates the bundled clean
+  sets perfectly but is trained on very little data; expect the ~84 % LOIO-CV to
+  be closer to real-world performance. Add images and re-run
+  `train_camera_clf.py` to harden it.
+- The geometry pipeline is non-ML and scale-invariant; only the final
+  per-corner camera/no-camera call is learned. If `models/camera_clf.npz` is
+  absent, `decide.py` falls back to raw Hough-circle presence (which **does**
+  false-positive on rounded normal frames — the reason the verifier exists).
 - All thresholds live in `config.py`; nothing is hard-coded elsewhere.
 
 ---
@@ -159,10 +172,13 @@ detect_meta_glasses.py   CLI entry
 app.py                   Flask web app
 config.py                every tunable (single @dataclass)
 eval_separation.py       positive/negative separation report
-pipeline/                preprocess · segment · locate · features · decide · viz
+train_camera_clf.py      train the corner camera verifier (LOIO CV + save)
+pipeline/                preprocess · segment · locate · features · camera_clf · decide · viz
+models/                  camera_clf.npz (trained verifier weights)
 templates/ static/       web UI (Jinja template, ES5 JS, CSS)
 ray_ban_frame/           clean Meta frame photos (positives)
-normal_glassess/         worn normal-glasses photos (negatives)
+normal_frame/            clean normal-frame photos (negatives)
+normal_glassess/         worn normal-glasses photos (extra reference)
 ray_ban/                 worn Meta photos (extra reference)
 debug/                   runtime overlays + JSON (gitignored)
 ```

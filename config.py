@@ -89,6 +89,10 @@ class Config:
     use_thickness_gate: bool = True    # require chunky corner unless circle+spec
     require_both: bool = False         # if True, both corners must fire
 
+    # ---- learned camera verifier -----------------------------------------
+    cam_clf_path: str = "models/camera_clf.npz"  # corner-crop classifier weights
+    cam_clf_thresh: float = 0.50       # per-corner P(camera) needed to fire
+
     @classmethod
     def from_json(cls, path: str) -> "Config":
         """Load defaults and merge a JSON override file on top."""

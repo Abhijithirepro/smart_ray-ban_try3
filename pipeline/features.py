@@ -21,6 +21,7 @@ The white background is excluded everywhere via the filled frame mask.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 
 import cv2
@@ -40,6 +41,7 @@ class CornerFeatures:
     f_spec: float = 0.0
     f_thick: float = 0.0
     circ: float = 0.0
+    cam_prob: float | None = None        # learned P(camera) for this corner crop
     # debug geometry (canonical px)
     circle: tuple | None = None          # chosen (cx, cy, r) of the module
     hough_candidates: list = field(default_factory=list)  # all (cx,cy,r)
@@ -296,9 +298,26 @@ def _thickness(roi: CornerROI, seg: Segment, loc: Located, cfg: Config) -> float
                          0.0, 1.0))
 
 
+_CLF_CACHE = {}
+
+
+def _load_clf(path: str):
+    """Lazily load (and cache) the corner camera classifier; None if absent."""
+    if path not in _CLF_CACHE:
+        from pipeline import camera_clf
+        _CLF_CACHE[path] = (camera_clf.CameraClf.load(path)
+                            if os.path.exists(path) else None)
+    return _CLF_CACHE[path]
+
+
 def extract(frames, seg: Segment, loc: Located, cfg: Config):
     """Return {'L': CornerFeatures, 'R': CornerFeatures}."""
+    clf = _load_clf(cfg.cam_clf_path)
     result = {}
     for roi in loc.rois:
-        result[roi.side] = _corner_features(roi, frames, seg, loc, cfg)
+        f = _corner_features(roi, frames, seg, loc, cfg)
+        if clf is not None:
+            from pipeline import camera_clf
+            f.cam_prob = round(clf.prob_from_crop(camera_clf.corner_crop(frames, roi)), 3)
+        result[roi.side] = f
     return result

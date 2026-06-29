@@ -70,14 +70,18 @@ def annotate(frames, seg: Segment, loc: Located, feats: dict,
             _label(img, "PICK", _i(cx - r), _i(cy + r) + 12, RED)
         for (px, py) in f.spec_pixels:
             img[max(0, py), max(0, px)] = CYAN
-        s = verdict.score_left if roi.side == "L" else verdict.score_right
-        cv2.putText(img, f"{roi.side}={s:.2f}", (roi.x, max(12, roi.y - 4)),
+        cam = "" if f.cam_prob is None else f"  Pcam={f.cam_prob:.2f}"
+        cv2.putText(img, f"{roi.side}{cam}", (roi.x, max(12, roi.y - 4)),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, YELLOW, 1, cv2.LINE_AA)
 
     # header banner
     color = RED if verdict.verdict == "META" else GREEN
-    banner = (f"{verdict.verdict}  overall={verdict.overall_score:.2f}  "
-              f"L={verdict.score_left:.2f} R={verdict.score_right:.2f}")
+    pL, pR = feats["L"].cam_prob, feats["R"].cam_prob
+    if pL is not None and pR is not None:
+        banner = f"{verdict.verdict}  Pcam L={pL:.2f} R={pR:.2f}"
+    else:
+        banner = (f"{verdict.verdict}  overall={verdict.overall_score:.2f}  "
+                  f"L={verdict.score_left:.2f} R={verdict.score_right:.2f}")
     cv2.rectangle(img, (0, 0), (img.shape[1], 28), (0, 0, 0), -1)
     cv2.putText(img, banner, (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2,
                 cv2.LINE_AA)
@@ -105,7 +109,8 @@ def montage(frames, loc: Located) -> np.ndarray:
 def features_to_dict(feats: dict, loc: Located, seg: Segment,
                      verdict: Verdict) -> dict:
     def fc(f):
-        return {"f_circle": f.f_circle, "f_blob": round(f.f_blob, 3),
+        return {"cam_prob": f.cam_prob,
+                "f_circle": f.f_circle, "f_blob": round(f.f_blob, 3),
                 "f_dark": round(f.f_dark, 3), "f_spec": f.f_spec,
                 "f_thick": round(f.f_thick, 3), "circ": f.circ,
                 "circle": [round(v, 1) for v in f.circle] if f.circle else None,

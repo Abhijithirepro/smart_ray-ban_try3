@@ -100,6 +100,74 @@ body.has-result .stage { grid-template-columns: 1fr; }
 /* ---------- console ---------- */
 .console { animation: rise .7s .16s cubic-bezier(.2,.8,.2,1) both; }
 
+/* ---------- mode tabs ---------- */
+.mode-tabs {
+  display: flex; gap: 8px; margin-bottom: 16px;
+  border: 1px solid var(--line); border-radius: 10px; padding: 5px; background: var(--ink-2);
+}
+.mode-tab {
+  flex: 1; cursor: pointer; border: 0; border-radius: 7px; padding: 11px 14px;
+  font-family: var(--mono); font-weight: 700; letter-spacing: .2em; font-size: 11.5px;
+  color: var(--fog); background: transparent; transition: background .2s, color .2s;
+}
+.mode-tab:hover { color: var(--chalk); }
+.mode-tab.is-active { color: var(--ink); background: var(--acid); }
+
+/* ---------- camera mode ---------- */
+.camera { display: flex; flex-direction: column; gap: 16px; }
+.camera__stage {
+  position: relative; min-height: 340px; border: 1.5px solid var(--line);
+  border-radius: 14px; overflow: hidden; background: #000;
+  display: grid; place-items: center;
+}
+.camera__instruction {
+  margin: 0; padding: 36px clamp(20px, 4vw, 48px); text-align: center;
+  color: var(--fog); font-size: 13.5px; line-height: 1.7; max-width: 48ch;
+}
+.camera__video { width: 100%; height: auto; max-height: 70vh; display: block; object-fit: contain; }
+.camera__live { position: relative; width: 100%; }
+
+/* live preview corner framing, echoes the drop reticle */
+.camera__live::before {
+  content: ""; position: absolute; inset: 10px; pointer-events: none;
+  border: 1px solid rgba(198,242,78,.25); border-radius: 8px;
+}
+
+/* big centered countdown number over the live feed */
+.countdown {
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-family: var(--display); font-weight: 800; font-size: clamp(80px, 16vw, 160px);
+  color: var(--acid); text-shadow: 0 0 40px rgba(198,242,78,.55);
+  pointer-events: none; animation: tick 1s ease-in-out infinite;
+}
+@keyframes tick {
+  0% { transform: scale(.78); opacity: .35; }
+  40% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(1); opacity: .85; }
+}
+
+/* capture / analysing status pinned to the bottom of the live feed */
+.camera__state {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 10px 14px; text-align: center;
+  font-size: 12px; letter-spacing: .18em; color: var(--acid);
+  background: linear-gradient(0deg, rgba(7,8,10,.85), transparent);
+}
+.camera__state:empty { display: none; }
+
+/* post-clip controls: start the scan or replay the instructional video */
+.camera__controls { display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.camera__prompt { margin: 0; color: var(--fog); font-size: 12.5px; letter-spacing: .1em; text-align: center; }
+.camera__buttons { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
+.camera__start, .camera__rewatch { align-self: auto; padding: 15px 30px; font-size: 13px; }
+
+/* secondary (ghost) button — outlined acid instead of solid fill */
+.again--ghost {
+  color: var(--acid); background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--acid);
+}
+.again--ghost:hover { background: rgba(198,242,78,.1); box-shadow: inset 0 0 0 1.5px var(--acid); }
+
 /* drop zone */
 .drop {
   position: relative; border: 1.5px dashed var(--line); border-radius: 14px;
@@ -177,23 +245,27 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .result.is-normal .meter__fill { background: var(--safe); }
 .meter__mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--chalk); opacity: .55; }
 
-/* corners */
+/* corners — each shows the learned P(camera) and a pass/fail state */
 .corners { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-.corner { border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; background: var(--ink-2); }
+.corner { border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; background: var(--ink-2); transition: border-color .3s, background .3s; }
 .corner__label { display: block; font-size: 11px; letter-spacing: .2em; color: var(--fog); margin-bottom: 8px; }
-.corner__score { font-family: var(--display); font-weight: 700; font-size: 38px; }
+.corner__score { display: block; font-family: var(--display); font-weight: 700; font-size: 34px; line-height: 1; }
+.corner__state { display: inline-block; margin-top: 9px; font-size: 11px; letter-spacing: .16em; color: var(--fog); }
+.corner.is-cam { border-color: var(--alert); background: rgba(255,67,38,.07); }
+.corner.is-cam .corner__score { color: var(--alert); }
+.corner.is-cam .corner__state { color: var(--alert); font-weight: 700; }
+.corner.is-nocam .corner__score { color: var(--chalk); }
+.corner.is-nocam .corner__state { color: var(--safe); }
 
-/* feature chips */
-.feats__title { font-size: 11px; letter-spacing: .3em; color: var(--fog); }
-.feats__chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
-.chip {
-  font-size: 12.5px; letter-spacing: .12em; padding: 9px 15px; border-radius: 22px;
-  border: 1px solid var(--line); color: var(--fog); background: var(--ink-2);
-  display: inline-flex; align-items: center; gap: 7px; transition: all .3s;
+/* why — plain-English reason for the verdict */
+.why__title { font-size: 11px; letter-spacing: .3em; color: var(--fog); }
+.why__text {
+  margin: 10px 0 0; padding: 14px 16px; border-radius: 12px;
+  border: 1px solid var(--line); border-left: 3px solid var(--acid);
+  background: var(--ink-2); color: var(--chalk); font-size: 13px; line-height: 1.65;
 }
-.chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--line); }
-.chip.on { color: var(--ink); background: var(--acid); border-color: var(--acid); font-weight: 700; }
-.chip.on::before { background: var(--ink); }
+.result.is-meta .why__text { border-left-color: var(--alert); }
+.result.is-normal .why__text { border-left-color: var(--safe); }
 
 /* again button */
 .again {

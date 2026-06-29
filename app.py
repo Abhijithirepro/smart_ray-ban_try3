@@ -16,7 +16,7 @@ import os
 import tempfile
 
 import cv2
-from flask import Flask, jsonify, render_template, request
+from flask import Flask, jsonify, render_template, request, send_file
 
 from config import Config
 from detect_meta_glasses import run
@@ -27,6 +27,8 @@ app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024  # 25 MB upload cap
 
 CFG = Config()
 ALLOWED = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+INTRO_VIDEO = os.path.join(APP_DIR, "make_and_give.mp4")
 
 
 def _png_data_uri(bgr_image) -> str:
@@ -40,7 +42,13 @@ def _png_data_uri(bgr_image) -> str:
 
 @app.route("/")
 def index():
-    return render_template("index.html", threshold=CFG.strong_thresh)
+    return render_template("index.html", threshold=CFG.cam_clf_thresh)
+
+
+@app.route("/intro-video")
+def intro_video():
+    """Serve the live-mode instructional clip from the project root."""
+    return send_file(INTRO_VIDEO, mimetype="video/mp4")
 
 
 @app.route("/api/detect", methods=["POST"])
@@ -69,7 +77,7 @@ def detect():
     overlay = viz.annotate(frames, seg, loc, feats, verdict)
     payload = viz.features_to_dict(feats, loc, seg, verdict)
     payload["overlay"] = _png_data_uri(overlay)
-    payload["threshold"] = CFG.strong_thresh
+    payload["threshold"] = CFG.cam_clf_thresh
     return jsonify(payload)
 
 
