@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MODULE SCAN // smart-glasses camera detector</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Syne:wght@600;700;800&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+</head>
+<body>
+  <div class="grain" aria-hidden="true"></div>
+
+  <header class="masthead">
+    <div class="masthead__mark">
+      <span class="dot" aria-hidden="true"></span>
+      MODULE&nbsp;SCAN
+    </div>
+    <div class="masthead__meta">
+      classical&nbsp;CV&nbsp;/&nbsp;no&nbsp;ML&nbsp;·&nbsp;threshold&nbsp;{{ '%.2f'|format(threshold) }}
+    </div>
+  </header>
+
+  <main class="stage">
+    <section class="intro">
+      <h1 class="intro__title">Is there a<br /><em>camera</em> in the frame?</h1>
+      <p class="intro__lede">
+        Drop a clean, roughly front-on photo of a pair of glasses. The scanner
+        hunts the top-outer corners for a Ray-Ban&nbsp;Meta camera module —
+        a small dark glassy bezel with a central glint.
+      </p>
+    </section>
+
+    <section class="console" aria-label="scanner">
+      <!-- DROP ZONE -->
+      <div id="drop" class="drop" tabindex="0" role="button"
+           aria-label="Upload an image to scan">
+        <input id="file" class="drop__input" type="file"
+               accept="image/png,image/jpeg,image/webp,image/bmp" />
+        <div class="drop__inner">
+          <div class="drop__reticle" aria-hidden="true">
+            <span></span><span></span><span></span><span></span>
+          </div>
+          <p class="drop__hint">DROP IMAGE&nbsp;·&nbsp;OR CLICK</p>
+          <p class="drop__sub">png · jpg · webp</p>
+        </div>
+      </div>
+
+      <!-- RESULT -->
+      <div id="result" class="result" hidden>
+        <div class="result__viz">
+          <div class="scanline" aria-hidden="true"></div>
+          <img id="overlay" class="result__img" alt="annotated detection overlay" />
+        </div>
+        <div class="result__panel">
+          <div id="verdict" class="verdict">
+            <span class="verdict__tag">VERDICT</span>
+            <span id="verdict-text" class="verdict__text">—</span>
+            <span id="verdict-reason" class="verdict__reason"></span>
+          </div>
+
+          <div class="meter">
+            <div class="meter__head">
+              <span>confidence</span><span id="conf-val">0.00</span>
+            </div>
+            <div class="meter__track">
+              <div id="conf-fill" class="meter__fill"></div>
+              <div class="meter__mark" id="conf-mark" title="decision threshold"></div>
+            </div>
+          </div>
+
+          <div class="corners">
+            <div class="corner">
+              <span class="corner__label">LEFT CORNER</span>
+              <span id="score-l" class="corner__score">0.00</span>
+            </div>
+            <div class="corner">
+              <span class="corner__label">RIGHT CORNER</span>
+              <span id="score-r" class="corner__score">0.00</span>
+            </div>
+          </div>
+
+          <div class="feats">
+            <span class="feats__title">signature</span>
+            <div id="feat-chips" class="feats__chips"></div>
+          </div>
+
+          <button id="again" class="again" type="button">SCAN ANOTHER</button>
+        </div>
+      </div>
+
+      <div id="status" class="status" role="status" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <span>deterministic · contour + Hough + specular glint</span>
+    <span>fires on either top-outer corner</span>
+  </footer>
+
+  <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>
