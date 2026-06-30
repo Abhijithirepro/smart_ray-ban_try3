@@ -97,6 +97,22 @@ body.has-result .stage { grid-template-columns: 1fr; }
 
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 
+/* how-it-works clip — sits in the intro column, away from the live camera scene */
+.intro__clip {
+  margin: 28px 0 0; padding: 0;
+  border: 1.5px solid var(--line); border-radius: 14px; overflow: hidden;
+  background: #000; box-shadow: var(--shadow);
+  animation: rise .7s .12s cubic-bezier(.2,.8,.2,1) both;
+}
+.intro__clip-video {
+  display: block; width: 100%; height: auto; max-height: 340px;
+  object-fit: contain; background: #000;
+}
+.intro__clip-cap {
+  padding: 10px 14px; font-size: 11px; letter-spacing: .18em; color: var(--fog);
+  border-top: 1px solid var(--line); background: var(--ink-2);
+}
+
 /* ---------- console ---------- */
 .console { animation: rise .7s .16s cubic-bezier(.2,.8,.2,1) both; }
 

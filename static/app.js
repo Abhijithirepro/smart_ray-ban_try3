@@ -205,16 +205,50 @@
 
   /* ======================================================================
      LIVE CAMERA MODE
-     enter → (2s) intro clip → START → [5s countdown → grab → analyse]∞
+     The how-it-works clip plays in the intro column (a separate place), while
+     the camera scene shows the live feed straight away:
+     enter → live preview + START (clip auto-plays alongside)
+           → START → [5s countdown → grab → analyse]∞
      ====================================================================== */
 
   var CYCLE_SECONDS = 5;       // live-preview countdown before each capture
   var RESULT_HOLD_MS = 3000;   // how long a verdict stays before the next cycle
-  var INTRO_DELAY_MS = 2000;   // wait after entering before the clip plays
 
   var stream = null;           // the active MediaStream (kept across cycles)
   var timers = [];             // pending setTimeout handles
   var ticker = null;           // the countdown setInterval handle
+  var spokenOnce = false;      // the instructions narration plays only once per load
+
+  /**
+   * Speak the instructions once. Browsers block autoplay-with-sound until a
+   * user gesture, so if play() is rejected we retry on the first tap/click.
+   */
+  function playInstructions() {
+    if (spokenOnce) { return; }
+    var audio = el('intro-audio');
+    if (!audio) { return; }
+    spokenOnce = true;
+    var fired = false;
+    var go = function () {
+      if (fired) { return; }
+      fired = true;
+      try { audio.currentTime = 0; } catch (e) {}
+      audio.play();
+    };
+    var p = audio.play();
+    if (p && typeof p.catch === 'function') {
+      p.catch(function () {
+        /* autoplay blocked — arm a one-shot gesture listener to start it */
+        var unlock = function () {
+          document.removeEventListener('pointerdown', unlock);
+          document.removeEventListener('keydown', unlock);
+          go();
+        };
+        document.addEventListener('pointerdown', unlock);
+        document.addEventListener('keydown', unlock);
+      });
+    }
+  }
 
   /** Clear every pending timer/interval so a mode switch fully stops the loop. */
   function clearTimers() {
@@ -238,8 +272,9 @@
   }
 
   /**
-   * Enter live-camera mode: request the webcam, show the instruction, and after
-   * a short beat play the muted intro clip. When the clip ends, reveal START.
+   * Enter live-camera mode: request the webcam, then show the live preview with
+   * START straight away in the camera scene while the how-it-works clip plays in
+   * the intro column. The clip never occupies the camera scene.
    */
   function enterCamera() {
     mode = 'camera';
@@ -248,16 +283,12 @@
     show('upload-mode', false);
     show('live-wrap', false);
     show('cam-controls', false);
-    show('intro', false);
     show('cam-instruction', true);
     el('cam-instruction').textContent =
-      'Initialising camera … allow access when prompted, then watch the quick ' +
-      'clip — it shows the one thing you keep missing.';
+      'Initialising camera … allow access when prompted.';
 
-    var startIntro = function () {
-      if (mode !== 'camera') { return; }
-      later(playIntro, INTRO_DELAY_MS);
-    };
+    playIntro();          // clip lives in the intro column, independent of the feed
+    playInstructions();   // spoken instructions, once per page load
 
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
       setStatus('this browser has no camera access; use Upload Image', 'error');
@@ -267,45 +298,48 @@
       .then(function (s) {
         if (mode !== 'camera') { s.getTracks().forEach(function (t) { t.stop(); }); return; }
         stream = s;
-        startIntro();
+        readyToScan();
       })
       .catch(function () {
         setStatus('camera access denied — switch to Upload Image instead', 'error');
-        startIntro();  // still play the clip; capture just won't have a feed
       });
   }
 
   /**
-   * Play the instructional clip from the start. When it ends (or playback is
-   * blocked), reveal the START / REWATCH controls. Used on entry and on rewatch.
+   * Show the live self-view preview plus the START / REPLAY controls, ready for
+   * the user to begin scanning whenever they like.
+   */
+  function readyToScan() {
+    if (mode !== 'camera' || !stream) { return; }
+    show('cam-instruction', false);
+    var live = el('live');
+    live.srcObject = stream;
+    el('countdown').hidden = true;
+    el('cam-state').textContent = '';
+    show('live-wrap', true);
+    show('cam-controls', true);
+    setStatus('watch the how-it-works clip, then press START TEST to scan', '');
+  }
+
+  /**
+   * Play the instructional clip from the start, in its own panel in the intro
+   * column. Used on entry and on REPLAY; failures (blocked autoplay) are silent.
    */
   function playIntro() {
-    if (mode !== 'camera') { return; }
-    clearTimers();
-    show('cam-instruction', false);
-    show('live-wrap', false);
-    show('cam-controls', false);
-    show('intro', true);
+    show('intro-clip', true);
     var intro = el('intro');
+    if (!intro) { return; }
     intro.currentTime = 0;
-    intro.onended = function () {
-      if (mode !== 'camera') { return; }
-      show('intro', false);
-      show('cam-controls', true);
-      setStatus('clip done · press START TEST to scan, or REWATCH the clip', '');
-    };
     var p = intro.play();
-    if (p && typeof p.catch === 'function') {
-      /* if autoplay is blocked, skip straight to the controls so we never stall */
-      p.catch(function () { if (intro.onended) { intro.onended(); } });
-    }
+    if (p && typeof p.catch === 'function') { p.catch(function () {}); }
   }
 
   /** Leave camera mode: stop the loop, release the webcam, reset the UI. */
   function leaveCamera() {
     clearTimers();
     var intro = el('intro');
-    if (intro) { intro.onended = null; intro.pause(); }
+    if (intro) { intro.pause(); }
+    show('intro-clip', false);
     if (stream) {
       stream.getTracks().forEach(function (t) { t.stop(); });
       stream = null;
@@ -315,14 +349,11 @@
     show('camera-mode', false);
   }
 
-  /** START handler: attach the live feed and begin the continuous capture loop. */
+  /** START handler: begin the continuous capture loop on the live feed. */
   function startLoop() {
     if (mode !== 'camera' || !stream) { return; }
     show('cam-controls', false);
     show('cam-instruction', false);
-    var intro = el('intro');
-    if (intro) { intro.onended = null; intro.pause(); }
-    show('intro', false);
     var live = el('live');
     live.srcObject = stream;
     runCycle();
@@ -462,7 +493,7 @@
     var camStart = el('cam-start');
     if (camStart) { camStart.addEventListener('click', startLoop); }
 
-    /* REWATCH replays the instructional clip, then re-shows the controls */
+    /* REPLAY restarts the how-it-works clip in the intro column */
     var camRewatch = el('cam-rewatch');
     if (camRewatch) { camRewatch.addEventListener('click', playIntro); }
 

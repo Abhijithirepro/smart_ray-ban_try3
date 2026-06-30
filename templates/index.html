@@ -12,6 +12,10 @@
 <body>
   <div class="grain" aria-hidden="true"></div>
 
+  <!-- one-time spoken instructions, played when the live page opens -->
+  <audio id="intro-audio" preload="auto"
+         src="{{ url_for('static', filename='intro-audio.mp3') }}"></audio>
+
   <header class="masthead">
     <div class="masthead__mark">
       <span class="dot" aria-hidden="true"></span>
@@ -30,6 +34,15 @@
         hunts the top-outer corners for a Ray-Ban&nbsp;Meta camera module —
         a small dark glassy bezel with a central glint.
       </p>
+
+      <!-- HOW-IT-WORKS CLIP — sits here, away from the live camera scene -->
+      <figure id="intro-clip" class="intro__clip" hidden>
+        <video id="intro" class="intro__clip-video" muted playsinline loop
+               preload="auto" src="/intro-video"></video>
+        <figcaption class="intro__clip-cap">
+          HOW&nbsp;IT&nbsp;WORKS&nbsp;· the one thing you keep missing
+        </figcaption>
+      </figure>
     </section>
 
     <section class="console" aria-label="scanner">
@@ -45,12 +58,8 @@
       <div id="camera-mode" class="camera">
         <div class="camera__stage">
           <p id="cam-instruction" class="camera__instruction">
-            Initialising camera&nbsp;… allow access when prompted, then watch the
-            quick clip — it shows the one thing you keep missing.
+            Initialising camera&nbsp;… allow access when prompted.
           </p>
-
-          <video id="intro" class="camera__video" muted playsinline
-                 preload="auto" src="/intro-video" hidden></video>
 
           <div id="live-wrap" class="camera__live" hidden>
             <video id="live" class="camera__video" autoplay muted playsinline></video>
@@ -60,13 +69,13 @@
         </div>
 
         <div id="cam-controls" class="camera__controls" hidden>
-          <p class="camera__prompt">Watched the clip? Start the live scan — or replay it.</p>
+          <p class="camera__prompt">Watch the how-it-works clip, then start the live scan.</p>
           <div class="camera__buttons">
             <button id="cam-start" class="again camera__start" type="button">
               START&nbsp;TEST
             </button>
             <button id="cam-rewatch" class="again again--ghost camera__rewatch" type="button">
-              REWATCH&nbsp;CLIP
+              REPLAY&nbsp;CLIP
             </button>
           </div>
         </div>
