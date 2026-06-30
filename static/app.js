@@ -308,10 +308,42 @@
   var CYCLE_SECONDS = 5;       // live-preview countdown before each capture
   var RESULT_HOLD_MS = 3000;   // how long a verdict stays before the next cycle
 
+  /* The guided capture sequence: one entry per pose. Pressing START walks these
+     in order — show this pose, count down 5s, grab a frame — then stops by
+     itself after the last pose. Only poses with analyze:true run the detector;
+     the left/right side frames are just captured and kept (see `captures`) for
+     later use. `label`/`arrow` drive the on-screen "which side" banner. */
+  var STEPS = [
+    { key: 'left',  analyze: false, arrow: '◀', side: 'left',
+      label: 'LEFT SIDE',
+      prompt: 'Turn the glasses so their LEFT side faces the camera' },
+    { key: 'right', analyze: false, arrow: '▶', side: 'right',
+      label: 'RIGHT SIDE',
+      prompt: 'Now turn so the RIGHT side faces the camera' },
+    { key: 'straight', analyze: true, arrow: '', side: '',
+      label: 'FRONT · STRAIGHT ON',
+      prompt: 'Now hold the glasses straight on, facing the camera' }
+  ];
+
+  /* the front/straight pose on its own — used for "CAPTURE AGAIN", which re-runs
+     only the analysed pose and skips the left/right side captures */
+  var STRAIGHT_STEP = STEPS[STEPS.length - 1];
+
   var stream = null;           // the active MediaStream (kept across cycles)
+  var screenStream = null;     // the shared-tab MediaStream being recorded
+  var recorder = null;         // MediaRecorder over screenStream
+  var recordedChunks = [];     // accumulated recording data blobs
+  var recordingActive = false; // true while the screen recording is running
   var timers = [];             // pending setTimeout handles
   var ticker = null;           // the countdown setInterval handle
+  var sequence = STEPS;        // the pose list the current run walks
+  var stepIndex = 0;           // which pose in `sequence` is being captured
+  var captures = [];           // {key, dataUrl} per captured pose, kept for later
+  var didFullRun = false;      // true once the full left/right/straight run is done
   var spokenOnce = false;      // the instructions narration plays only once per load
+
+  /* expose the captured pose frames so later steps can pick them up */
+  window.SCAN_CAPTURES = captures;
 
   /**
    * Speak the instructions once. Browsers block autoplay-with-sound until a
@@ -373,6 +405,10 @@
   function enterCamera() {
     mode = 'camera';
     clearTimers();
+    /* fresh entry → next run is the full left/right/straight sequence */
+    didFullRun = false;
+    setStartLabel('START&nbsp;TEST');
+    show('cam-end', false);
     show('camera-mode', true);
     show('upload-mode', false);
     show('live-wrap', false);
@@ -400,8 +436,8 @@
   }
 
   /**
-   * Show the live self-view preview plus the START / REPLAY controls, ready for
-   * the user to begin scanning whenever they like.
+   * Show the live self-view preview plus the START control, ready for the user
+   * to begin scanning whenever they like.
    */
   function readyToScan() {
     if (mode !== 'camera' || !stream) { return; }
@@ -417,7 +453,7 @@
 
   /**
    * Play the instructional clip from the start, in its own panel in the intro
-   * column. Used on entry and on REPLAY; failures (blocked autoplay) are silent.
+   * column. Used on camera entry; failures (blocked autoplay) are silent.
    */
   function playIntro() {
     show('intro-clip', true);
@@ -438,41 +474,206 @@
       stream.getTracks().forEach(function (t) { t.stop(); });
       stream = null;
     }
+    /* release the shared tab if a recording is still running (discarded) */
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = null;
+      try { recorder.stop(); } catch (e) {}
+    }
+    if (screenStream) {
+      screenStream.getTracks().forEach(function (t) { t.stop(); });
+      screenStream = null;
+    }
+    recorder = null;
+    recordingActive = false;
+    show('cam-end', false);
     var live = el('live');
     if (live) { live.srcObject = null; }
     show('camera-mode', false);
   }
 
-  /** START handler: begin the continuous capture loop on the live feed. */
+  /**
+   * Ask the user to share this tab and start recording it. Must be called from a
+   * user gesture (browsers block screen-share otherwise). Resolves to true once
+   * recording is running, false if unsupported or the user cancels the prompt.
+   * @returns {Promise<boolean>}
+   */
+  function startScreenRecording() {
+    if (recordingActive) { return Promise.resolve(true); }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia ||
+        typeof window.MediaRecorder === 'undefined') {
+      return Promise.resolve(false);
+    }
+    /* preferCurrentTab nudges Chrome to offer THIS tab first */
+    var opts = { video: { frameRate: 30 }, audio: false, preferCurrentTab: true };
+    return navigator.mediaDevices.getDisplayMedia(opts).then(function (s) {
+      screenStream = s;
+      recordedChunks = [];
+      var mime = '';
+      var prefs = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
+      for (var i = 0; i < prefs.length; i += 1) {
+        if (window.MediaRecorder.isTypeSupported &&
+            window.MediaRecorder.isTypeSupported(prefs[i])) { mime = prefs[i]; break; }
+      }
+      recorder = mime ? new window.MediaRecorder(s, { mimeType: mime })
+                      : new window.MediaRecorder(s);
+      recorder.ondataavailable = function (e) {
+        if (e.data && e.data.size > 0) { recordedChunks.push(e.data); }
+      };
+      recorder.start();
+      recordingActive = true;
+      /* if the user stops sharing from the browser's own UI, reflect that */
+      s.getVideoTracks().forEach(function (t) {
+        t.addEventListener('ended', function () { recordingActive = false; });
+      });
+      return true;
+    }).catch(function () { return false; });
+  }
+
+  /**
+   * Stop the screen recording, assemble the captured chunks into a WebM blob and
+   * trigger a download. Safe to call when nothing was recorded.
+   */
+  function stopRecordingAndDownload() {
+    var finalize = function () {
+      var type = (recordedChunks[0] && recordedChunks[0].type) || 'video/webm';
+      var blob = new Blob(recordedChunks, { type: type });
+      if (screenStream) {
+        screenStream.getTracks().forEach(function (t) { t.stop(); });
+        screenStream = null;
+      }
+      recordingActive = false;
+      recorder = null;
+      if (!blob.size) {
+        setStatus('no screen recording was captured', 'error');
+        return;
+      }
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = 'module-scan-recording.webm';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      setStatus('recording downloaded · module-scan-recording.webm', '');
+    };
+    if (recorder && recorder.state !== 'inactive') {
+      recorder.onstop = finalize;
+      recorder.stop();
+    } else {
+      finalize();
+    }
+  }
+
+  /** Trigger a download of a data URI / blob URL under the given filename. */
+  function triggerDownload(href, filename) {
+    var a = document.createElement('a');
+    a.href = href;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+  }
+
+  /**
+   * Download every captured pose photo. Each is a PNG data URI in `captures`,
+   * named by capture order and pose key (e.g. 01-left.png, 03-straight.png).
+   * Downloads are staggered so browsers don't collapse them into one.
+   * @returns {number} how many photos were queued for download
+   */
+  function downloadCaptures() {
+    captures.forEach(function (cap, i) {
+      var n = (i + 1 < 10 ? '0' : '') + (i + 1);
+      window.setTimeout(function () {
+        triggerDownload(cap.dataUrl, n + '-' + cap.key + '.png');
+      }, i * 350);
+    });
+    return captures.length;
+  }
+
+  /** START handler: begin the guided three-pose capture sequence. */
   function startLoop() {
     if (mode !== 'camera' || !stream) { return; }
     show('cam-controls', false);
     show('cam-instruction', false);
     var live = el('live');
     live.srcObject = stream;
-    runCycle();
+    show('cam-end', false);
+
+    var begin = function () {
+      if (mode !== 'camera') { return; }
+      show('cam-controls', false);
+      /* first run walks all three poses; after that, "CAPTURE AGAIN" re-runs
+         only the straight pose through analysis */
+      sequence = didFullRun ? [STRAIGHT_STEP] : STEPS;
+      stepIndex = 0;
+      /* full run starts a fresh capture set; recaptures append, so every photo
+         taken this session (left, right, straight + any retakes) is kept and
+         downloaded on END */
+      if (!didFullRun) { captures.length = 0; }
+      runCycle();
+    };
+
+    /* recording runs continuously across the whole session; the share-tab
+       prompt only appears the first time (browsers require this click) */
+    if (recordingActive) { begin(); return; }
+    setStatus('share this tab when prompted, to record the session …', 'busy');
+    startScreenRecording().then(function (ok) {
+      if (mode !== 'camera') { return; }
+      if (!ok) { setStatus('continuing without screen recording', ''); }
+      begin();
+    });
   }
 
-  /** One loop iteration: 5s live countdown, then grab + analyse a frame. */
+  /**
+   * Paint the big "which side" banner over the live feed for the current pose
+   * (a directional arrow on left/right poses, just a label for the front pose).
+   * @param {Object} step  one entry from STEPS
+   */
+  function renderPoseBanner(step) {
+    var banner = el('pose-banner');
+    if (!banner) { return; }
+    var label = '<span class="pose-banner__label">' + step.label + '</span>';
+    var arrow = step.arrow
+      ? '<span class="pose-banner__arrow pose-banner__arrow--' + step.side +
+        '" aria-hidden="true">' + step.arrow + '</span>'
+      : '';
+    /* arrow leads on the left pose, trails on the right pose */
+    banner.innerHTML = (step.side === 'right') ? (label + arrow) : (arrow + label);
+    banner.hidden = false;
+  }
+
+  /**
+   * One step of the guided sequence: show the current pose prompt, run a 5s
+   * countdown over the live feed, then grab + analyse a frame. Falls through to
+   * finishSequence() once every pose in STEPS has been captured.
+   */
   function runCycle() {
     if (mode !== 'camera') { return; }
+    var step = sequence[stepIndex];
+    if (!step) { finishSequence(); return; }
+
     /* clear any prior verdict and bring the live preview back */
     var result = el('result');
     if (result) { result.hidden = true; }
     document.body.className = '';
     show('live-wrap', true);
-    el('cam-state').textContent = '';
+
+    renderPoseBanner(step);
+    el('cam-state').textContent = 'Pose ' + (stepIndex + 1) + ' of ' +
+      sequence.length + ' · ' + step.prompt;
 
     var remaining = CYCLE_SECONDS;
     var cd = el('countdown');
     cd.textContent = String(remaining);
     cd.hidden = false;
-    setStatus('hold a pair of glasses to the camera …', '');
+    setStatus(step.prompt + ' — capturing in ' + remaining + 's …', '');
 
     ticker = window.setInterval(function () {
       remaining -= 1;
       if (remaining > 0) {
         cd.textContent = String(remaining);
+        setStatus(step.prompt + ' — capturing in ' + remaining + 's …', '');
         return;
       }
       window.clearInterval(ticker);
@@ -482,9 +683,48 @@
     }, 1000);
   }
 
-  /** Grab the current live frame to a canvas and POST it for analysis. */
+  /**
+   * End the guided sequence: stop the loop, leave the final verdict on screen
+   * and bring back the START controls so the user can run the three poses again.
+   */
+  function finishSequence() {
+    if (mode !== 'camera') { return; }
+    clearTimers();
+    el('countdown').hidden = true;
+    el('pose-banner').hidden = true;
+    var poses = sequence.length;
+    /* the first full run unlocks "CAPTURE AGAIN", which re-captures and
+       re-analyses only the straight pose */
+    didFullRun = true;
+    setStartLabel('CAPTURE&nbsp;AGAIN');
+    el('cam-state').textContent = poses > 1
+      ? 'Sequence complete · captured ' + poses + ' poses'
+      : 'Front photo captured';
+    show('cam-controls', true);
+    show('cam-end', recordingActive);
+    setStatus('press CAPTURE AGAIN to retake the straight photo, or END to ' +
+      'download the recording', '');
+  }
+
+  /**
+   * Set the START / CAPTURE AGAIN button's label. Both states are green; only
+   * END is red, so the label is all that changes here.
+   * @param {string} text  button label (may contain entities)
+   */
+  function setStartLabel(text) {
+    var btn = el('cam-start');
+    if (btn) { btn.innerHTML = text; }
+  }
+
+  /**
+   * Grab the current live frame to a canvas, keep it in `captures`, and — only
+   * for poses flagged analyze:true — run the detector on it. The left/right side
+   * frames are captured but NOT analysed (kept for later use); the front pose is
+   * the one that gets a verdict.
+   */
   function captureFrame() {
     if (mode !== 'camera') { return; }
+    var step = sequence[stepIndex];
     var live = el('live');
     var canvas = el('grab');
     var w = live.videoWidth || 1280;
@@ -492,21 +732,35 @@
     canvas.width = w;
     canvas.height = h;
     canvas.getContext('2d').drawImage(live, 0, 0, w, h);
-    el('cam-state').textContent = 'captured · analysing …';
+    el('pose-banner').hidden = true;
 
-    var onDone = function () {
+    /* advance to the next pose after `holdMs`, or stop after the last one */
+    var advance = function (holdMs) {
       if (mode !== 'camera') { return; }
-      /* hold the verdict briefly, then loop into the next capture */
-      later(runCycle, RESULT_HOLD_MS);
+      stepIndex += 1;
+      later(stepIndex < sequence.length ? runCycle : finishSequence, holdMs);
     };
 
+    /* always keep the frame; what differs is whether we analyse it */
+    captures.push({ key: step.key, dataUrl: canvas.toDataURL('image/png') });
+
+    if (!step.analyze) {
+      /* left / right side: capture only, no detection */
+      el('cam-state').textContent = step.label + ' captured ✓';
+      setStatus(step.label + ' captured — hold on …', '');
+      advance(RESULT_HOLD_MS);
+      return;
+    }
+
+    /* front pose: run the detector and show the verdict */
+    el('cam-state').textContent = 'captured · analysing …';
     if (canvas.toBlob) {
       canvas.toBlob(function (blob) {
         if (mode !== 'camera') { return; }
-        scan(blob, onDone);
+        scan(blob, function () { advance(RESULT_HOLD_MS); });
       }, 'image/png');
     } else {
-      onDone();  // ancient browser without toBlob — just keep the loop alive
+      advance(RESULT_HOLD_MS);  // ancient browser without toBlob
     }
   }
 
@@ -598,9 +852,21 @@
     var camStart = el('cam-start');
     if (camStart) { camStart.addEventListener('click', startLoop); }
 
-    /* REPLAY restarts the how-it-works clip in the intro column */
-    var camRewatch = el('cam-rewatch');
-    if (camRewatch) { camRewatch.addEventListener('click', playIntro); }
+    /* END stops the screen recording and downloads it, then resets for a
+       fresh session */
+    var camEnd = el('cam-end');
+    if (camEnd) {
+      camEnd.addEventListener('click', function () {
+        clearTimers();
+        var nPhotos = downloadCaptures();   // all captured pose photos
+        stopRecordingAndDownload();         // plus the screen recording
+        setStatus('downloading ' + nPhotos + ' photo' +
+          (nPhotos === 1 ? '' : 's') + ' + the screen recording …', '');
+        didFullRun = false;
+        setStartLabel('START&nbsp;TEST');
+        show('cam-end', false);
+      });
+    }
 
     /* camera is the default mode on load */
     enterCamera();

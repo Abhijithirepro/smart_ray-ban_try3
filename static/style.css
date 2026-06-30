@@ -149,6 +149,31 @@ body.has-result .stage { grid-template-columns: 1fr; }
   border: 1px solid rgba(198,242,78,.25); border-radius: 8px;
 }
 
+/* pose banner — large "which side" indicator pinned to the top of the feed */
+.pose-banner {
+  position: absolute; top: 16px; left: 50%; transform: translateX(-50%);
+  display: flex; align-items: center; gap: 14px;
+  padding: 10px 22px; border-radius: 999px; z-index: 3;
+  background: rgba(7,8,10,.82); border: 1px solid rgba(198,242,78,.45);
+  color: var(--acid); font-family: var(--display); font-weight: 800;
+  font-size: clamp(18px, 3.2vw, 30px); letter-spacing: .1em;
+  text-shadow: 0 0 22px rgba(198,242,78,.5);
+  pointer-events: none; white-space: nowrap;
+}
+.pose-banner[hidden] { display: none; }
+.pose-banner__label { line-height: 1; }
+.pose-banner__arrow { font-size: 1.3em; line-height: 1; }
+.pose-banner__arrow--left  { animation: nudge-l 1.1s ease-in-out infinite; }
+.pose-banner__arrow--right { animation: nudge-r 1.1s ease-in-out infinite; }
+@keyframes nudge-l {
+  0%,100% { transform: translateX(0); opacity: .65; }
+  50% { transform: translateX(-5px); opacity: 1; }
+}
+@keyframes nudge-r {
+  0%,100% { transform: translateX(0); opacity: .65; }
+  50% { transform: translateX(5px); opacity: 1; }
+}
+
 /* big centered countdown number over the live feed */
 .countdown {
   position: absolute; inset: 0; display: grid; place-items: center;
@@ -171,18 +196,27 @@ body.has-result .stage { grid-template-columns: 1fr; }
 }
 .camera__state:empty { display: none; }
 
-/* post-clip controls: start the scan or replay the instructional video */
+/* pre-scan controls: start the guided capture sequence */
 .camera__controls { display: flex; flex-direction: column; align-items: center; gap: 14px; }
 .camera__prompt { margin: 0; color: var(--fog); font-size: 12.5px; letter-spacing: .1em; text-align: center; }
 .camera__buttons { display: flex; flex-wrap: wrap; gap: 12px; justify-content: center; }
-.camera__start, .camera__rewatch { align-self: auto; padding: 15px 30px; font-size: 13px; }
+.camera__start, .camera__end { align-self: auto; padding: 15px 30px; font-size: 13px; }
 
-/* secondary (ghost) button — outlined acid instead of solid fill */
+/* END — red outline, signals stop / finish (distinct from the lime START) */
 .again--ghost {
-  color: var(--acid); background: transparent;
-  box-shadow: inset 0 0 0 1.5px var(--acid);
+  color: var(--alert); background: transparent;
+  box-shadow: inset 0 0 0 1.5px var(--alert);
 }
-.again--ghost:hover { background: rgba(198,242,78,.1); box-shadow: inset 0 0 0 1.5px var(--acid); }
+.again--ghost:hover {
+  background: rgba(255,67,38,.12); box-shadow: inset 0 0 0 1.5px var(--alert);
+}
+
+/* END lives on its own row at the foot of the page, set apart from START */
+.endbar {
+  display: flex; justify-content: center;
+  padding: 8px clamp(18px, 4vw, 56px) 28px;
+}
+.endbar .camera__end { margin-top: 0; padding: 16px 34px; font-size: 13px; }
 
 /* drop zone */
 .drop {

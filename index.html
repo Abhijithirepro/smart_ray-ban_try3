@@ -63,19 +63,17 @@
 
           <div id="live-wrap" class="camera__live" hidden>
             <video id="live" class="camera__video" autoplay muted playsinline></video>
+            <div id="pose-banner" class="pose-banner" aria-live="polite" hidden></div>
             <div id="countdown" class="countdown" aria-hidden="true"></div>
             <div id="cam-state" class="camera__state"></div>
           </div>
         </div>
 
         <div id="cam-controls" class="camera__controls" hidden>
-          <p class="camera__prompt">Watch the how-it-works clip, then start the live scan.</p>
+          <p class="camera__prompt">START asks to share this tab so the session is screen-recorded, then guides you through three poses — left side, right side, then straight on — with a 5-second countdown before each capture, and stops on its own. Press END to download the recording.</p>
           <div class="camera__buttons">
             <button id="cam-start" class="again camera__start" type="button">
               START&nbsp;TEST
-            </button>
-            <button id="cam-rewatch" class="again again--ghost camera__rewatch" type="button">
-              REPLAY&nbsp;CLIP
             </button>
           </div>
         </div>
@@ -146,6 +144,13 @@
 
       <div id="status" class="status" role="status" aria-live="polite"></div>
     </section>
+
+    <!-- END sits on its own at the foot of the page, away from START -->
+    <div class="endbar">
+      <button id="cam-end" class="again again--ghost camera__end" type="button" hidden>
+        END&nbsp;·&nbsp;DOWNLOAD&nbsp;PHOTOS&nbsp;+&nbsp;VIDEO
+      </button>
+    </div>
   </main>
 
   <footer class="footer">
