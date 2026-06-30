@@ -1,0 +1,13 @@
+# The deployed app is fully static (index.html + static/ run in the browser).
+# Everything below is Python pipeline / training tooling and datasets that the
+# site does not need at runtime — keeping them out also stops Vercel from
+# mis-detecting this as a Flask backend.
+*.py
+pipeline/
+tools/
+requirements.txt
+models/
+normal_frame/
+ray_ban_frame/
+browser_test.html
+README.md
