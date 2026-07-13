@@ -1,0 +1,1 @@
+{"input": 640, "strides": [8, 16, 32], "conf": 0.40, "nms": 0.65, "class": "rayban_meta", "channel_order": "BGR", "normalize": false, "pad_value": 114}

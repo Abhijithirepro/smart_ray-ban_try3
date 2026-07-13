@@ -3,11 +3,21 @@
 # site does not need at runtime — keeping them out also stops Vercel from
 # mis-detecting this as a Flask backend.
 *.py
+*.pt
 pipeline/
 tools/
 requirements.txt
-models/
+# anchored: exclude the top-level Python models/ but KEEP static/models/ (the
+# site's ONNX detectors) — an unanchored "models/" would strip those and break it
+/models/
 normal_frame/
 ray_ban_frame/
+ray_ban_face/
+normal_glassess/
+actual_rayban_cases/
+data/
+.venv-train/
+debug/
+view/
 browser_test.html
 README.md

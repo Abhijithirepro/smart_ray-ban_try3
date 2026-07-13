@@ -1,6 +1,14 @@
-/* Stage 3 - locate the two lenses + derive the two corner ROIs.
- * Port of pipeline/locate.py. ROIs are anchored to each detected lens so the
- * detector is robust to off-centre framing and left/right flips.
+/* Stage 3 - locate the two top-outer corner ROIs the classifier scores.
+ * Port of pipeline/locate.py. Two paths (whichever yields scorable corners wins):
+ *
+ *   FACE path (worn glasses): a Haar face box anchors a small grid of candidate
+ *     corner crops per side; features scores them all and keeps the peak P(camera).
+ *   HELD path (glasses held / studio): the lens-hole method - split the frame bbox
+ *     at its centre, take the largest interior hole per half as the lens, and anchor
+ *     one corner ROI outside each lens on the end piece.
+ *
+ * locate() returns candidates:{L:[...],R:[...]}; the caller peaks per side.
+ * twoLensGate() is the domain gate: a face was anchored, or two lenses were found.
  */
 (function (root, factory) {
   var mod = factory();
@@ -10,6 +18,52 @@
 function () {
   'use strict';
 
+  // ------------------------------------------------------------------ //
+  // FACE path (worn glasses)
+  // ------------------------------------------------------------------ //
+  function clipRoi(x, y, w, h, side, H, W) {
+    var x0 = Math.max(0, Math.round(x)), y0 = Math.max(0, Math.round(y));
+    var x1 = Math.min(W, Math.round(x + w)), y1 = Math.min(H, Math.round(y + h));
+    return {
+      side: side, x: x0, y: y0, w: Math.max(0, x1 - x0), h: Math.max(0, y1 - y0),
+      camCx: (x0 + x1) / 2, camCy: (y0 + y1) / 2
+    };
+  }
+
+  /** Grid of candidate corner crops in one top-outer region of the face box. */
+  function faceCandidates(face, side, cfg, H, W) {
+    var out = [];
+    var si, di, dj;
+    for (si = 0; si < cfg.face_search_sizes.length; si += 1) {
+      var w = face.w * cfg.face_search_sizes[si];
+      var h = w;
+      for (di = 0; di < cfg.face_search_dy.length; di += 1) {
+        var cy = face.y + face.h * cfg.face_search_dy[di];
+        for (dj = 0; dj < cfg.face_search_dx.length; dj += 1) {
+          var dx = cfg.face_search_dx[dj];
+          var x = side === 'L'
+            ? face.x + face.w * dx
+            : face.x + face.w - w - face.w * dx;
+          out.push(clipRoi(x, cy - h / 2, w, h, side, H, W));
+        }
+      }
+    }
+    return out;
+  }
+
+  function locateFace(face, cfg, H, W) {
+    var cand = { L: faceCandidates(face, 'L', cfg, H, W),
+                 R: faceCandidates(face, 'R', cfg, H, W) };
+    return {
+      path: 'face', candidates: cand, method: 'haar:' + face.method, face: face,
+      lensLeft: null, lensRight: null, rLens: 0,
+      rois: [cand.L[0], cand.R[0]]   // placeholder; caller replaces with peak
+    };
+  }
+
+  // ------------------------------------------------------------------ //
+  // HELD path (glasses held up / studio) - lens-hole method
+  // ------------------------------------------------------------------ //
   /** Interior holes (lens openings) of the frame contour, in full-image px. */
   function holesInRegion(grayEq, seg, cv) {
     var x = seg.bbox[0], y = seg.bbox[1], w = seg.bbox[2], h = seg.bbox[3];
@@ -56,12 +110,21 @@ function () {
     return { cx: baseX + cx, cy: y + cy, hw: 0.22 * w, hh: 0.50 * h };
   }
 
+  /* Search region OUTSIDE the lens, on the end piece, where the camera lives.
+     Capped at roi_outer_max * lens.hw beyond the lens edge so it can't slide onto
+     a hand/hair when the frame bbox is large (port of _make_roi). */
   function makeRoi(lens, bbox, side, cfg, H, W) {
     var bx = bbox[0], by = bbox[1], bw = bbox[2];
     var overlap = cfg.roi_lens_overlap * lens.hw;
+    var outerCap = cfg.roi_outer_max * lens.hw;
     var x0, x1;
-    if (side === 'L') { x0 = bx; x1 = lens.cx - lens.hw + overlap; }
-    else { x0 = lens.cx + lens.hw - overlap; x1 = bx + bw; }
+    if (side === 'L') {
+      x0 = Math.max(bx, lens.cx - lens.hw - outerCap);
+      x1 = lens.cx - lens.hw + overlap;
+    } else {
+      x0 = lens.cx + lens.hw - overlap;
+      x1 = Math.min(bx + bw, lens.cx + lens.hw + outerCap);
+    }
     var y0 = by;
     var y1 = lens.cy + cfg.roi_y_below * lens.hh;
 
@@ -77,10 +140,7 @@ function () {
     };
   }
 
-  /**
-   * @returns {{lensLeft, lensRight, rLens, rois:[CornerROI,CornerROI], method}}
-   */
-  function locate(grayEq, seg, cfg, cv) {
+  function locateHeld(grayEq, seg, cfg, cv) {
     var H = grayEq.rows, W = grayEq.cols;
     var x = seg.bbox[0], w = seg.bbox[2];
     var cxSplit = x + w / 2;
@@ -101,10 +161,41 @@ function () {
     else { lensR = fallbackLens(seg, 'R', cv); method = 'holes+fallback'; }
 
     var rLens = (lensL.hw + lensR.hw) / 2;
-    var rois = [makeRoi(lensL, seg.bbox, 'L', cfg, H, W),
-                makeRoi(lensR, seg.bbox, 'R', cfg, H, W)];
-    return { lensLeft: lensL, lensRight: lensR, rLens: rLens, rois: rois, method: method };
+    var roiL = makeRoi(lensL, seg.bbox, 'L', cfg, H, W);
+    var roiR = makeRoi(lensR, seg.bbox, 'R', cfg, H, W);
+    return {
+      path: 'held', candidates: { L: [roiL], R: [roiR] }, method: method,
+      face: null, lensLeft: lensL, lensRight: lensR, rLens: rLens,
+      rois: [roiL, roiR]
+    };
   }
 
-  return { locate: locate };
+  /**
+   * Face box present -> worn path; else held-glasses lens path.
+   * @param {cv.Mat} grayEq CV_8UC1
+   * @param {object} seg  segment() result
+   * @param {object} cfg
+   * @param {object} cv
+   * @param {object|null} [face]  facedet.detectFace() result
+   */
+  function locate(grayEq, seg, cfg, cv, face) {
+    if (face) { return locateFace(face, cfg, grayEq.rows, grayEq.cols); }
+    return locateHeld(grayEq, seg, cfg, cv);
+  }
+
+  /**
+   * Domain gate: confirm structure is present. Face anchored, or two lenses found.
+   * @returns {{ok:boolean, reason:string}}
+   */
+  function twoLensGate(loc) {
+    if (loc.path === 'face') {
+      return { ok: !!loc.face, reason: loc.face ? 'face anchor' : 'no face' };
+    }
+    if (!loc.lensLeft || !loc.lensRight) {
+      return { ok: false, reason: 'no two lenses found' };
+    }
+    return { ok: true, reason: 'held glasses frame' };
+  }
+
+  return { locate: locate, twoLensGate: twoLensGate };
 });

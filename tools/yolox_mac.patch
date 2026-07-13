@@ -1,0 +1,295 @@
+diff --git a/tools/eval.py b/tools/eval.py
+index 83ad76b..83ecf9b 100644
+--- a/tools/eval.py
++++ b/tools/eval.py
+@@ -153,8 +153,16 @@ def main(exp, args, num_gpu):
+     evaluator.per_class_AP = True
+     evaluator.per_class_AR = True
+ 
+-    torch.cuda.set_device(rank)
+-    model.cuda(rank)
++    # --- Mac patch: device pick cuda -> mps -> cpu ---
++    if torch.cuda.is_available():
++        torch.cuda.set_device(rank)
++        eval_device = "cuda:{}".format(rank)
++    elif torch.backends.mps.is_available():
++        eval_device = "mps"
++    else:
++        eval_device = "cpu"
++    model.to(eval_device)
++    # --- end Mac patch ---
+     model.eval()
+ 
+     if not args.speed and not args.trt:
+@@ -163,8 +171,7 @@ def main(exp, args, num_gpu):
+         else:
+             ckpt_file = args.ckpt
+         logger.info("loading checkpoint from {}".format(ckpt_file))
+-        loc = "cuda:{}".format(rank)
+-        ckpt = torch.load(ckpt_file, map_location=loc)
++        ckpt = torch.load(ckpt_file, map_location=eval_device, weights_only=False)
+         model.load_state_dict(ckpt["model"])
+         logger.info("loaded checkpoint done.")
+ 
+diff --git a/tools/export_onnx.py b/tools/export_onnx.py
+index 8703166..c4d489b 100644
+--- a/tools/export_onnx.py
++++ b/tools/export_onnx.py
+@@ -76,7 +76,7 @@ def main():
+         ckpt_file = args.ckpt
+ 
+     # load the model state dict
+-    ckpt = torch.load(ckpt_file, map_location="cpu")
++    ckpt = torch.load(ckpt_file, map_location="cpu", weights_only=False)  # Mac patch: torch>=2.6 default flip
+ 
+     model.eval()
+     if "model" in ckpt:
+@@ -88,7 +88,7 @@ def main():
+     logger.info("loading checkpoint done.")
+     dummy_input = torch.randn(args.batch_size, 3, exp.test_size[0], exp.test_size[1])
+ 
+-    torch.onnx._export(
++    torch.onnx.export(  # Mac patch: torch>=2.x removed the private _export; use public API
+         model,
+         dummy_input,
+         args.output_name,
+diff --git a/yolox/core/trainer.py b/yolox/core/trainer.py
+index 8f8016e..699adb2 100644
+--- a/yolox/core/trainer.py
++++ b/yolox/core/trainer.py
+@@ -1,6 +1,7 @@
+ #!/usr/bin/env python3
+ # Copyright (c) Megvii, Inc. and its affiliates.
+ 
++import contextlib
+ import datetime
+ import os
+ import time
+@@ -34,6 +35,24 @@ from yolox.utils import (
+ )
+ 
+ 
++class _PlainFetcher:
++    """Mac patch: drop-in for DataPrefetcher (which relies on CUDA streams).
++    Iterates the loader and moves batches to the target device (mps/cpu)."""
++
++    def __init__(self, loader, device):
++        self.loader = loader
++        self.device = device
++        self._it = iter(loader)
++
++    def next(self):
++        try:
++            inps, targets, _, _ = next(self._it)
++        except StopIteration:
++            self._it = iter(self.loader)
++            inps, targets, _, _ = next(self._it)
++        return inps.to(self.device), targets.to(self.device)
++
++
+ class Trainer:
+     def __init__(self, exp: Exp, args):
+         # init function only defines some basic attr, other attrs like model, optimizer are built in
+@@ -43,12 +62,19 @@ class Trainer:
+ 
+         # training related attr
+         self.max_epoch = exp.max_epoch
+-        self.amp_training = args.fp16
+-        self.scaler = torch.cuda.amp.GradScaler(enabled=args.fp16)
++        # --- Mac patch: device pick cuda -> mps -> cpu; AMP only on CUDA ---
++        if torch.cuda.is_available():
++            self.device = "cuda:{}".format(get_local_rank())
++        elif torch.backends.mps.is_available():
++            self.device = "mps"
++        else:
++            self.device = "cpu"
++        self.amp_training = args.fp16 and torch.cuda.is_available()
++        self.scaler = torch.amp.GradScaler("cuda", enabled=self.amp_training)
++        # --- end Mac patch ---
+         self.is_distributed = get_world_size() > 1
+         self.rank = get_rank()
+         self.local_rank = get_local_rank()
+-        self.device = "cuda:{}".format(self.local_rank)
+         self.use_model_ema = exp.ema
+         self.save_history_ckpt = exp.save_history_ckpt
+ 
+@@ -103,7 +129,12 @@ class Trainer:
+         inps, targets = self.exp.preprocess(inps, targets, self.input_size)
+         data_end_time = time.time()
+ 
+-        with torch.cuda.amp.autocast(enabled=self.amp_training):
++        amp_ctx = (
++            torch.amp.autocast("cuda", enabled=self.amp_training)
++            if torch.cuda.is_available()
++            else contextlib.nullcontext()
++        )
++        with amp_ctx:
+             outputs = self.model(inps, targets)
+ 
+         loss = outputs["total_loss"]
+@@ -133,7 +164,8 @@ class Trainer:
+         logger.info("exp value:\n{}".format(self.exp))
+ 
+         # model related init
+-        torch.cuda.set_device(self.local_rank)
++        if torch.cuda.is_available():
++            torch.cuda.set_device(self.local_rank)
+         model = self.exp.get_model()
+         logger.info(
+             "Model Summary: {}".format(get_model_info(model, self.exp.test_size))
+@@ -155,7 +187,12 @@ class Trainer:
+             cache_img=self.args.cache,
+         )
+         logger.info("init prefetcher, this might take one minute or less...")
+-        self.prefetcher = DataPrefetcher(self.train_loader)
++        # --- Mac patch: DataPrefetcher uses CUDA streams; use a plain fetcher off-CUDA ---
++        if torch.cuda.is_available():
++            self.prefetcher = DataPrefetcher(self.train_loader)
++        else:
++            self.prefetcher = _PlainFetcher(self.train_loader, self.device)
++        # --- end Mac patch ---
+         # max_iter means iters per epoch
+         self.max_iter = len(self.train_loader)
+ 
+@@ -265,7 +302,8 @@ class Trainer:
+                 ["{}: {:.3f}s".format(k, v.avg) for k, v in time_meter.items()]
+             )
+ 
+-            mem_str = "gpu mem: {:.0f}Mb, mem: {:.1f}Gb".format(gpu_mem_usage(), mem_usage())
++            gpu_mem = gpu_mem_usage() if torch.cuda.is_available() else 0
++            mem_str = "gpu mem: {:.0f}Mb, mem: {:.1f}Gb".format(gpu_mem, mem_usage())
+ 
+             logger.info(
+                 "{}, {}, {}, {}, lr: {:.3e}".format(
+@@ -316,7 +354,7 @@ class Trainer:
+             else:
+                 ckpt_file = self.args.ckpt
+ 
+-            ckpt = torch.load(ckpt_file, map_location=self.device)
++            ckpt = torch.load(ckpt_file, map_location=self.device, weights_only=False)
+             # resume the model/optimizer state dict
+             model.load_state_dict(ckpt["model"])
+             self.optimizer.load_state_dict(ckpt["optimizer"])
+@@ -337,7 +375,7 @@ class Trainer:
+             if self.args.ckpt is not None:
+                 logger.info("loading checkpoint for fine tuning")
+                 ckpt_file = self.args.ckpt
+-                ckpt = torch.load(ckpt_file, map_location=self.device)["model"]
++                ckpt = torch.load(ckpt_file, map_location=self.device, weights_only=False)["model"]
+                 model = load_ckpt(model, ckpt)
+             self.start_epoch = 0
+ 
+diff --git a/yolox/evaluators/coco_evaluator.py b/yolox/evaluators/coco_evaluator.py
+index e218c74..7e22379 100644
+--- a/yolox/evaluators/coco_evaluator.py
++++ b/yolox/evaluators/coco_evaluator.py
+@@ -132,7 +132,8 @@ class COCOEvaluator:
+             summary (sr): summary info of evaluation.
+         """
+         # TODO half to amp_test
+-        tensor_type = torch.cuda.HalfTensor if half else torch.cuda.FloatTensor
++        # Mac patch: infer device from the model instead of assuming CUDA tensor types.
++        eval_device = next(model.parameters()).device
+         model = model.eval()
+         if half:
+             model = model.half()
+@@ -159,7 +160,8 @@ class COCOEvaluator:
+             progress_bar(self.dataloader)
+         ):
+             with torch.no_grad():
+-                imgs = imgs.type(tensor_type)
++                imgs = imgs.to(eval_device)
++                imgs = imgs.half() if half else imgs.float()
+ 
+                 # skip the last iters since batchsize might be not enough for batch inference
+                 is_time_record = cur_iter < len(self.dataloader) - 1
+@@ -186,7 +188,9 @@ class COCOEvaluator:
+             data_list.extend(data_list_elem)
+             output_data.update(image_wise_data)
+ 
+-        statistics = torch.cuda.FloatTensor([inference_time, nms_time, n_samples])
++        statistics = torch.tensor(
++            [inference_time, nms_time, n_samples], dtype=torch.float32, device=eval_device
++        )
+         if distributed:
+             # different process/device might have different speed,
+             # to make sure the process will not be stucked, sync func is used here.
+diff --git a/yolox/models/losses.py b/yolox/models/losses.py
+index 77b4d8e..3684749 100644
+--- a/yolox/models/losses.py
++++ b/yolox/models/losses.py
+@@ -27,7 +27,7 @@ class IOUloss(nn.Module):
+         area_p = torch.prod(pred[:, 2:], 1)
+         area_g = torch.prod(target[:, 2:], 1)
+ 
+-        en = (tl < br).type(tl.type()).prod(dim=1)
++        en = (tl < br).type_as(tl).prod(dim=1)  # Mac patch: type_as works on mps (unlike .type(str))
+         area_i = torch.prod(br - tl, 1) * en
+         area_u = area_p + area_g - area_i
+         iou = (area_i) / (area_u + 1e-16)
+diff --git a/yolox/models/yolo_head.py b/yolox/models/yolo_head.py
+index 3e51768..8d2bd9f 100644
+--- a/yolox/models/yolo_head.py
++++ b/yolox/models/yolo_head.py
+@@ -163,7 +163,7 @@ class YOLOXHead(nn.Module):
+             if self.training:
+                 output = torch.cat([reg_output, obj_output, cls_output], 1)
+                 output, grid = self.get_output_and_grid(
+-                    output, k, stride_this_level, xin[0].type()
++                    output, k, stride_this_level, xin[0]  # Mac patch: pass tensor, not .type() string
+                 )
+                 x_shifts.append(grid[:, :, 0])
+                 y_shifts.append(grid[:, :, 1])
+@@ -208,7 +208,7 @@ class YOLOXHead(nn.Module):
+                 [x.flatten(start_dim=2) for x in outputs], dim=2
+             ).permute(0, 2, 1)
+             if self.decode_in_inference:
+-                return self.decode_outputs(outputs, dtype=xin[0].type())
++                return self.decode_outputs(outputs, dtype=xin[0])  # Mac patch: tensor, not .type()
+             else:
+                 return outputs
+ 
+@@ -220,7 +220,9 @@ class YOLOXHead(nn.Module):
+         hsize, wsize = output.shape[-2:]
+         if grid.shape[2:4] != output.shape[2:4]:
+             yv, xv = meshgrid([torch.arange(hsize), torch.arange(wsize)])
+-            grid = torch.stack((xv, yv), 2).view(1, 1, hsize, wsize, 2).type(dtype)
++            # Mac patch: dtype is now a reference tensor; .to() copies device+dtype
++            # (works on cuda/mps/cpu, unlike .type('torch.mps.FloatTensor')).
++            grid = torch.stack((xv, yv), 2).view(1, 1, hsize, wsize, 2).to(dtype)
+             self.grids[k] = grid
+ 
+         output = output.view(batch_size, 1, n_ch, hsize, wsize)
+@@ -242,8 +244,8 @@ class YOLOXHead(nn.Module):
+             shape = grid.shape[:2]
+             strides.append(torch.full((*shape, 1), stride))
+ 
+-        grids = torch.cat(grids, dim=1).type(dtype)
+-        strides = torch.cat(strides, dim=1).type(dtype)
++        grids = torch.cat(grids, dim=1).to(dtype)      # Mac patch: .to(tensor) copies device+dtype
++        strides = torch.cat(strides, dim=1).to(dtype)  # Mac patch: .to(tensor) copies device+dtype
+ 
+         outputs = torch.cat([
+             (outputs[..., 0:2] + grids) * strides,
+@@ -594,7 +596,7 @@ class YOLOXHead(nn.Module):
+             obj_output = self.obj_preds[k](reg_feat)
+ 
+             output = torch.cat([reg_output, obj_output, cls_output], 1)
+-            output, grid = self.get_output_and_grid(output, k, stride_this_level, xin[0].type())
++            output, grid = self.get_output_and_grid(output, k, stride_this_level, xin[0])  # Mac patch: tensor
+             x_shifts.append(grid[:, :, 0])
+             y_shifts.append(grid[:, :, 1])
+             expanded_strides.append(
+diff --git a/yolox/utils/boxes.py b/yolox/utils/boxes.py
+index f71e8d9..771e7df 100644
+--- a/yolox/utils/boxes.py
++++ b/yolox/utils/boxes.py
+@@ -97,7 +97,7 @@ def bboxes_iou(bboxes_a, bboxes_b, xyxy=True):
+ 
+         area_a = torch.prod(bboxes_a[:, 2:], 1)
+         area_b = torch.prod(bboxes_b[:, 2:], 1)
+-    en = (tl < br).type(tl.type()).prod(dim=2)
++    en = (tl < br).type_as(tl).prod(dim=2)  # Mac patch: type_as works on mps (unlike .type(str))
+     area_i = torch.prod(br - tl, 2) * en  # * ((tl < br).all())
+     return area_i / (area_a[:, None] + area_b - area_i)
+ 

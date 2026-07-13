@@ -24,10 +24,21 @@ function () {
     seg_isolated_max: 0.80,
     canny_lo: 50,
     canny_hi: 150,
-    // locate (top-outer corner ROI the classifier scores)
+    // locate — FACE path (worn glasses): grid of candidate corner crops anchored
+    // on the Haar face box; features keeps the peak P(camera) per side.
+    face_search_sizes: [0.28, 0.36, 0.45],        // module box side / face width
+    face_search_dy: [0.18, 0.28, 0.38, 0.48],     // eye-line offset, * face height
+    face_search_dx: [-0.05, 0.05, 0.15],          // inset from outer edge, * face w
+    // locate — HELD path (top-outer corner ROI the classifier scores)
     roi_lens_overlap: 0.15,
     roi_y_below: 0.15,
     roi_min_w_frac: 0.10,
+    roi_outer_max: 1.0,        // cap ROI outer edge at this * lens.hw beyond the lens
+    // glasses-region crop (input to the CNN classifier) — mirrors config.py
+    region_wpad: 0.06,         // widen past the face box each side (* face w)
+    region_up: 0.24,           // above the eye line (* face h)
+    region_down: 0.20,         // below the eye line (* face h)
+    region_seg_pad: 0.08,      // pad the segment bbox (* bbox side)
     // learned classifier
     cam_clf_thresh: 0.50
   };

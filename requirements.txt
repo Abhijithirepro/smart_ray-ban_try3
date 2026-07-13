@@ -1,5 +1,24 @@
-# The app itself runs 100% in the browser (static/ + OpenCV.js); these are only
-# needed to (re)train the in-browser model and regenerate parity data via tools/.
+# The app itself runs 100% in the browser (static/ + OpenCV.js + onnxruntime-web);
+# these are only needed to (re)train the in-browser models and export ONNX.
 numpy>=2.2
 Pillow>=10.0
 opencv-python-headless>=4.10   # >=4.10 for numpy 2.x compatibility
+
+# --- region CNN training + ONNX export (train_region_clf.py, tools/export_onnx.py) ---
+# Install into a venv with system site-packages so torch is shared:
+#   python3 -m venv --system-site-packages .venv-train
+#   .venv-train/bin/pip install torch torchvision onnx onnxruntime onnxscript
+torch>=2.2
+torchvision>=0.17
+onnx>=1.16
+onnxruntime>=1.18
+onnxscript>=0.1            # required by torch>=2.9 onnx exporter
+
+# --- backend object detector: whole-glasses RF-DETR / YOLO12 ---------------
+# (train_detector.py, infer.py, eval_detector.py, tools/bootstrap_boxes.py,
+#  tools/augment_positives.py, tools/export_dataset.py)
+# NOTE: use `python -m pip install ...` inside the venv — the .venv-train/bin/pip
+# shim has a stale path after the project folder was renamed.
+ultralytics>=8.4          # YOLO12 detector (fast fallback, trains on Apple MPS)
+albumentations>=2.0       # failure-mode-targeted offline augmentation
+rfdetr>=1.0               # RF-DETR detector (best accuracy; prefers a CUDA GPU)

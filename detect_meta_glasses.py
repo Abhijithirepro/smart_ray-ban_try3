@@ -16,7 +16,7 @@ import json
 import sys
 
 from config import Config
-from pipeline import preprocess, segment, locate, features, decide, viz
+from pipeline import preprocess, segment, locate, features, decide, viz, facedet
 
 
 def parse_args(argv=None):
@@ -48,10 +48,13 @@ def build_config(args) -> Config:
 
 def run(image_path: str, cfg: Config, manual_bbox=None):
     frames = preprocess.preprocess(image_path, cfg)
+    # Worn glasses: anchor on the face (Haar). None -> held-glasses lens path.
+    face = None if manual_bbox is not None else facedet.detect_face(frames.gray)
     seg = segment.segment(frames.gray_eq, cfg, manual_bbox=manual_bbox)
-    loc = locate.locate(frames.gray_eq, seg, cfg)
+    loc = locate.locate(frames.gray_eq, seg, cfg, face=face)
     feats = features.extract(frames, seg, loc, cfg)
-    verdict = decide.decide(feats, cfg, seg=seg, shape=frames.gray.shape)
+    gate_ok, gate_reason = locate.two_lens_gate(loc, cfg)
+    verdict = decide.decide(feats, cfg, gate_ok=gate_ok, gate_reason=gate_reason)
     return frames, seg, loc, feats, verdict
 
 

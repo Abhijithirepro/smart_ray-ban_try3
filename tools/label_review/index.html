@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ray-Ban box review</title>
+<style>
+  :root { --bg:#12141a; --panel:#1c1f28; --line:#2c313d; --fg:#e7ebf3; --mut:#9aa4b8;
+          --acc:#38d39f; --warn:#f0a13a; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         background:var(--bg); color:var(--fg); }
+  header { display:flex; align-items:center; gap:16px; padding:10px 16px;
+           background:var(--panel); border-bottom:1px solid var(--line); flex-wrap:wrap; }
+  header h1 { font-size:15px; margin:0; font-weight:600; }
+  .pill { background:#242938; border:1px solid var(--line); border-radius:999px;
+          padding:2px 10px; color:var(--mut); font-size:12px; }
+  .grow { flex:1; }
+  button { background:#242938; color:var(--fg); border:1px solid var(--line);
+           border-radius:8px; padding:7px 12px; cursor:pointer; font-size:13px; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); color:#06231a; border-color:var(--acc); font-weight:600; }
+  button.danger:hover { border-color:#e5484d; color:#ff8b8f; }
+  #wrap { display:flex; height:calc(100vh - 52px); }
+  #stage { flex:1; display:flex; align-items:center; justify-content:center;
+           overflow:hidden; position:relative; background:#0b0d12; }
+  canvas { touch-action:none; cursor:crosshair; box-shadow:0 8px 40px #0009; }
+  aside { width:280px; background:var(--panel); border-left:1px solid var(--line);
+          padding:16px; overflow:auto; }
+  aside h2 { font-size:12px; letter-spacing:.08em; text-transform:uppercase;
+             color:var(--mut); margin:0 0 8px; }
+  .kv { display:flex; justify-content:space-between; padding:3px 0;
+        border-bottom:1px dashed var(--line); font-size:13px; }
+  .kv b { font-weight:600; }
+  .tag { display:inline-block; padding:1px 8px; border-radius:6px; font-size:11px; }
+  .tag.worn{background:#173a2e;color:var(--acc)} .tag.held{background:#3a2f17;color:var(--warn)}
+  .tag.center{background:#3a1720;color:#ff8b8f} .tag.none{background:#242938;color:var(--mut)}
+  .hint { color:var(--mut); font-size:12px; margin-top:14px; }
+  kbd { background:#242938; border:1px solid var(--line); border-bottom-width:2px;
+        border-radius:5px; padding:1px 6px; font-family:ui-monospace,monospace; font-size:11px; }
+  .bar { height:4px; background:#242938; border-radius:2px; overflow:hidden; margin-top:6px; }
+  .bar>div { height:100%; background:var(--acc); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Ray-Ban box review</h1>
+  <span class="pill" id="pos">–</span>
+  <span class="pill" id="reviewed">reviewed 0</span>
+  <span class="grow"></span>
+  <button id="prev">← Prev</button>
+  <button id="del" class="danger">Delete box (d)</button>
+  <button id="save" class="primary">Save + Next →</button>
+</header>
+<div id="wrap">
+  <div id="stage"><canvas id="cv"></canvas></div>
+  <aside>
+    <h2>Current image</h2>
+    <div class="kv"><span>file</span><b id="mFile">–</b></div>
+    <div class="kv"><span>source</span><b id="mSrc">–</b></div>
+    <div class="kv"><span>split</span><b id="mSplit">–</b></div>
+    <div class="kv"><span>method</span><span id="mMethod" class="tag none">–</span></div>
+    <div class="kv"><span>box</span><b id="mBox">–</b></div>
+    <div class="kv"><span>reviewed</span><b id="mRev">no</b></div>
+    <div class="bar"><div id="progFill" style="width:0"></div></div>
+    <div class="hint">
+      Drag inside the box to move it. Drag a corner handle to resize.
+      Drag on empty canvas to draw a fresh box (replaces the current one).<br><br>
+      <kbd>→</kbd>/<kbd>Enter</kbd> save + next &nbsp; <kbd>←</kbd> prev<br>
+      <kbd>d</kbd> delete box &nbsp; <kbd>n</kbd> clear &amp; redraw &nbsp; <kbd>r</kbd> reset
+    </div>
+  </aside>
+</div>
+<script>
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+let imgs = [], idx = 0, img = new Image();
+let box = null;            // [x,y,w,h] in IMAGE pixels
+let orig = null;           // pristine box to reset to
+let view = {scale:1, ox:0, oy:0};
+const HANDLE = 9;          // px radius in screen space
+let drag = null;           // {mode, handle, sx, sy, start}
+
+function fitCanvas() {
+  const stage = document.getElementById('stage');
+  const maxW = stage.clientWidth - 32, maxH = stage.clientHeight - 32;
+  const s = Math.min(maxW / img.naturalWidth, maxH / img.naturalHeight, 1.5);
+  view.scale = s;
+  cv.width = Math.round(img.naturalWidth * s);
+  cv.height = Math.round(img.naturalHeight * s);
+}
+const toScreen = (x,y) => [x*view.scale, y*view.scale];
+const toImage = (sx,sy) => [sx/view.scale, sy/view.scale];
+
+function draw() {
+  ctx.clearRect(0,0,cv.width,cv.height);
+  ctx.drawImage(img, 0,0, cv.width, cv.height);
+  if (box) {
+    const [sx,sy] = toScreen(box[0], box[1]);
+    const sw = box[2]*view.scale, sh = box[3]*view.scale;
+    ctx.lineWidth = 2.5; ctx.strokeStyle = '#38d39f';
+    ctx.strokeRect(sx,sy,sw,sh);
+    ctx.fillStyle = 'rgba(56,211,159,.10)'; ctx.fillRect(sx,sy,sw,sh);
+    // handles
+    ctx.fillStyle = '#38d39f';
+    for (const [hx,hy] of corners()) {
+      ctx.beginPath(); ctx.arc(hx,hy,HANDLE,0,7); ctx.fill();
+    }
+  }
+}
+function corners() {
+  const [sx,sy] = toScreen(box[0], box[1]);
+  const sw = box[2]*view.scale, sh = box[3]*view.scale;
+  return [[sx,sy],[sx+sw,sy],[sx,sy+sh],[sx+sw,sy+sh]];
+}
+function hitHandle(mx,my) {
+  if (!box) return -1;
+  const cs = corners();
+  for (let i=0;i<4;i++){ const [hx,hy]=cs[i];
+    if (Math.hypot(mx-hx,my-hy) <= HANDLE+3) return i; }
+  return -1;
+}
+function inside(mx,my){
+  if (!box) return false;
+  const [sx,sy]=toScreen(box[0],box[1]);
+  return mx>=sx && my>=sy && mx<=sx+box[2]*view.scale && my<=sy+box[3]*view.scale;
+}
+
+cv.addEventListener('pointerdown', e=>{
+  cv.setPointerCapture(e.pointerId);
+  const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const h=hitHandle(mx,my);
+  if (h>=0){ drag={mode:'resize', handle:h}; }
+  else if (inside(mx,my)){ drag={mode:'move', sx:mx, sy:my, start:box.slice()}; }
+  else { const [ix,iy]=toImage(mx,my); box=[ix,iy,0,0]; drag={mode:'new'}; }
+  draw();
+});
+cv.addEventListener('pointermove', e=>{
+  if (!drag) return;
+  const r=cv.getBoundingClientRect(), mx=e.clientX-r.left, my=e.clientY-r.top;
+  const [ix,iy]=toImage(mx,my);
+  if (drag.mode==='move'){
+    const dx=(mx-drag.sx)/view.scale, dy=(my-drag.sy)/view.scale;
+    box=[drag.start[0]+dx, drag.start[1]+dy, drag.start[2], drag.start[3]];
+  } else if (drag.mode==='new'){
+    box[2]=ix-box[0]; box[3]=iy-box[1];
+  } else if (drag.mode==='resize'){
+    let x0=box[0], y0=box[1], x1=box[0]+box[2], y1=box[1]+box[3];
+    if (drag.handle===0){x0=ix;y0=iy;} if (drag.handle===1){x1=ix;y0=iy;}
+    if (drag.handle===2){x0=ix;y1=iy;} if (drag.handle===3){x1=ix;y1=iy;}
+    box=[x0,y0,x1-x0,y1-y0];
+  }
+  draw();
+});
+cv.addEventListener('pointerup', ()=>{
+  if (box) normalize();
+  drag=null; draw(); refreshMeta();
+});
+function normalize(){
+  let [x,y,w,h]=box;
+  if (w<0){x+=w;w=-w;} if (h<0){y+=h;h=-h;}
+  x=Math.max(0,Math.min(x,img.naturalWidth)); y=Math.max(0,Math.min(y,img.naturalHeight));
+  w=Math.min(w,img.naturalWidth-x); h=Math.min(h,img.naturalHeight-y);
+  box = (w<4||h<4) ? null : [x,y,w,h];
+}
+
+async function load() {
+  const m = await (await fetch('/api/manifest')).json();
+  imgs = m.images;
+  document.getElementById('pos').textContent = imgs.length + ' images';
+  show(0);
+  updateReviewed();
+}
+function updateReviewed(){
+  const n = imgs.filter(r=>r.reviewed).length;
+  document.getElementById('reviewed').textContent = 'reviewed '+n+'/'+imgs.length;
+}
+function show(i){
+  if (i<0||i>=imgs.length) return;
+  idx=i; const r=imgs[i];
+  img = new Image();
+  img.onload = ()=>{ fitCanvas(); draw(); };
+  img.src = '/'+r.image + '?t='+Date.now();
+  box = r.box ? r.box.slice() : null;
+  orig = r.box ? r.box.slice() : null;
+  refreshMeta();
+  document.getElementById('progFill').style.width = ((i+1)/imgs.length*100)+'%';
+}
+function refreshMeta(){
+  const r=imgs[idx];
+  document.getElementById('mFile').textContent = r.image.split('/').pop();
+  document.getElementById('mSrc').textContent = r.source;
+  document.getElementById('mSplit').textContent = r.split;
+  const meth = r.method || 'none';
+  const mm=document.getElementById('mMethod'); mm.textContent=meth; mm.className='tag '+meth;
+  document.getElementById('mBox').textContent = box ? box.map(v=>Math.round(v)).join(', ') : 'none';
+  document.getElementById('mRev').textContent = r.reviewed ? 'yes' : 'no';
+}
+async function save(advance){
+  const r=imgs[idx];
+  const res = await fetch('/api/save', {method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({image:r.image, box: box ? box.map(v=>Math.round(v)) : null})});
+  if (res.ok){ r.box = box ? box.map(v=>Math.round(v)) : null; r.reviewed=true;
+               updateReviewed(); }
+  if (advance){ if (idx<imgs.length-1) show(idx+1); else refreshMeta(); }
+  else refreshMeta();
+}
+
+document.getElementById('save').onclick = ()=>save(true);
+document.getElementById('prev').onclick = ()=>show(idx-1);
+document.getElementById('del').onclick  = ()=>{ box=null; draw(); refreshMeta(); };
+window.addEventListener('keydown', e=>{
+  if (e.key==='ArrowRight'||e.key==='Enter'){ e.preventDefault(); save(true); }
+  else if (e.key==='ArrowLeft'){ save(false); show(idx-1); }
+  else if (e.key==='d'){ box=null; draw(); refreshMeta(); }
+  else if (e.key==='n'){ box=null; draw(); refreshMeta(); }
+  else if (e.key==='r'){ box = orig ? orig.slice() : null; draw(); refreshMeta(); }
+});
+window.addEventListener('resize', ()=>{ if(img.naturalWidth){ fitCanvas(); draw(); }});
+load();
+</script>
+</body>
+</html>

@@ -1,23 +1,28 @@
-"""Stage 3 - locate the two lenses, derive R_lens and the two corner ROIs.
+"""Stage 3 - locate the two top-outer corner ROIs the classifier scores.
 
-This is the highest-leverage stage: every downstream feature is searched in the
-ROI that this module places, at the scale this module derives. ROIs are anchored
-to *each detected lens* (not to absolute image position), so the detector is
-robust to off-centre framing and left/right flips.
+Two localization paths (whichever produces scorable corners wins):
 
-Method A (primary, shape-agnostic): split the frame bbox at its centre; in each
-half find the largest interior hole (the lens opening) and take its bbox.
-Rimless / filled fallback: use the half-mask centroid with fixed extents.
+  * FACE path (worn glasses): a Haar face box (pipeline/facedet) anchors a small
+    grid of candidate corner crops per side; features scores them all and keeps
+    the peak P(camera). Pure CV can't find glasses on a face, so the face is the
+    anchor. Placement imprecision is absorbed by searching the grid.
+  * HELD path (glasses held up / studio): the original lens-hole method - split
+    the frame bbox at its centre, take the largest interior hole per half as the
+    lens, and anchor one corner ROI outside each lens on the end piece.
+
+`two_lens_gate` provides the held-path domain gate (a plausible two-lens frame);
+the face path is gated simply by "a face was found".
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import cv2
 import numpy as np
 
 from config import Config
 from pipeline.segment import Segment
+from pipeline.facedet import Face
 
 
 @dataclass
@@ -41,13 +46,55 @@ class CornerROI:
 
 @dataclass
 class Located:
-    lens_left: Lens
-    lens_right: Lens
-    r_lens: float
-    rois: list           # [CornerROI(L), CornerROI(R)]
+    path: str                        # "face" | "held"
+    candidates: dict                 # {"L": [CornerROI...], "R": [CornerROI...]}
     method: str
+    face: Face | None = None
+    lens_left: Lens | None = None
+    lens_right: Lens | None = None
+    r_lens: float = 0.0
+    rois: list = field(default_factory=list)   # best/first ROI per side (viz)
 
 
+# --------------------------------------------------------------------------- #
+# FACE path (worn glasses)
+# --------------------------------------------------------------------------- #
+def _clip_roi(x, y, w, h, side, shape) -> CornerROI:
+    H, W = shape[:2]
+    x0 = max(0, int(round(x))); y0 = max(0, int(round(y)))
+    x1 = min(W, int(round(x + w))); y1 = min(H, int(round(y + h)))
+    return CornerROI(side=side, x=x0, y=y0, w=max(0, x1 - x0), h=max(0, y1 - y0),
+                     cam_cx=(x0 + x1) / 2.0, cam_cy=(y0 + y1) / 2.0)
+
+
+def _face_candidates(face: Face, side: str, cfg: Config, shape) -> list:
+    """Grid of candidate corner crops in one top-outer region of the face box."""
+    out = []
+    for sz in cfg.face_search_sizes:
+        w = face.w * sz
+        h = w
+        for dy in cfg.face_search_dy:
+            cy = face.y + face.h * dy
+            for dx in cfg.face_search_dx:
+                if side == "L":
+                    x = face.x + face.w * dx
+                else:
+                    x = face.x + face.w - w - face.w * dx
+                out.append(_clip_roi(x, cy - h / 2.0, w, h, side, shape))
+    return out
+
+
+def locate_face(face: Face, cfg: Config, shape) -> Located:
+    cand = {"L": _face_candidates(face, "L", cfg, shape),
+            "R": _face_candidates(face, "R", cfg, shape)}
+    rois = [cand["L"][0], cand["R"][0]]        # placeholder; features picks best
+    return Located(path="face", candidates=cand, method=f"haar:{face.method}",
+                   face=face, rois=rois)
+
+
+# --------------------------------------------------------------------------- #
+# HELD path (glasses held up / studio) - original lens-hole method
+# --------------------------------------------------------------------------- #
 def _holes_in_region(gray_eq, seg: Segment, cfg: Config):
     """Return (cx, cy, w, h, area) for interior holes of the frame contour."""
     x, y, w, h = seg.bbox
@@ -95,20 +142,20 @@ def _fallback_lens(seg: Segment, side: str) -> Lens:
 def _make_roi(lens: Lens, bbox, side: str, cfg: Config, shape) -> CornerROI:
     """Search region OUTSIDE the lens, on the end piece, where the camera lives.
 
-    It runs from the lens's outer edge (with a small overlap back into the rim)
-    outward to the frame edge, and from the top of the frame down to just past
-    the lens centre. Anchoring to the lens box makes it scale with the frame
-    and follow the actual eye shape, rather than a fixed bbox fraction.
+    Runs from the lens's outer edge (small overlap back into the rim) outward,
+    but capped at `roi_outer_max * lens.hw` beyond the lens edge so it can't
+    slide onto a hand/hair when the frame bbox is large.
     """
     H, W = shape[:2]
     bx, by, bw, bh = bbox
     overlap = cfg.roi_lens_overlap * lens.hw
+    outer_cap = cfg.roi_outer_max * lens.hw
     if side == "L":                      # outer edge is the LEFT side
-        x0 = bx
+        x0 = max(bx, lens.cx - lens.hw - outer_cap)
         x1 = lens.cx - lens.hw + overlap
     else:                                # outer edge is the RIGHT side
         x0 = lens.cx + lens.hw - overlap
-        x1 = bx + bw
+        x1 = min(bx + bw, lens.cx + lens.hw + outer_cap)
     y0 = by
     y1 = lens.cy + cfg.roi_y_below * lens.hh
 
@@ -128,7 +175,7 @@ def _make_roi(lens: Lens, bbox, side: str, cfg: Config, shape) -> CornerROI:
                      cam_cx=cam_cx, cam_cy=cam_cy)
 
 
-def locate(gray_eq: np.ndarray, seg: Segment, cfg: Config) -> Located:
+def locate_held(gray_eq: np.ndarray, seg: Segment, cfg: Config) -> Located:
     x, y, w, h = seg.bbox
     cx_split = x + w / 2.0
     method = "holes"
@@ -147,8 +194,37 @@ def locate(gray_eq: np.ndarray, seg: Segment, cfg: Config) -> Located:
         lens_r = _fallback_lens(seg, "R"); method = "holes+fallback"
 
     r_lens = float(np.mean([lens_l.hw, lens_r.hw]))
+    roi_l = _make_roi(lens_l, seg.bbox, "L", cfg, gray_eq.shape)
+    roi_r = _make_roi(lens_r, seg.bbox, "R", cfg, gray_eq.shape)
+    return Located(path="held", candidates={"L": [roi_l], "R": [roi_r]},
+                   method=method, lens_left=lens_l, lens_right=lens_r,
+                   r_lens=r_lens, rois=[roi_l, roi_r])
 
-    rois = [_make_roi(lens_l, seg.bbox, "L", cfg, gray_eq.shape),
-            _make_roi(lens_r, seg.bbox, "R", cfg, gray_eq.shape)]
-    return Located(lens_left=lens_l, lens_right=lens_r, r_lens=r_lens,
-                   rois=rois, method=method)
+
+def locate(gray_eq: np.ndarray, seg: Segment, cfg: Config,
+           face: Face | None = None) -> Located:
+    """Face box present -> worn path; else held-glasses lens path."""
+    if face is not None:
+        return locate_face(face, cfg, gray_eq.shape)
+    return locate_held(gray_eq, seg, cfg)
+
+
+# --------------------------------------------------------------------------- #
+# Held-path domain gate: a plausible, tilt-tolerant two-lens frame
+# --------------------------------------------------------------------------- #
+def two_lens_gate(loc: Located, cfg: Config):
+    """Return (passed: bool, reason: str) - the domain gate.
+
+    We deliberately do NOT gate on lens geometry: the held-path lens boxes are too
+    noisy (real Ray-Bans whose BOTH corners fire 1.00 were being vetoed for
+    "implausible separation"), and gating on studio assumptions is exactly what
+    made the original detector reject real photos. FP control rests on the
+    both-corners classifier rule + the (retrained) discriminative classifier, which
+    already holds normal_frame at 25/25 NORMAL. The gate only confirms structure is
+    present: a face was anchored, or two lens regions were located.
+    """
+    if loc.path == "face":
+        return (loc.face is not None), ("face anchor" if loc.face else "no face")
+    if loc.lens_left is None or loc.lens_right is None:
+        return False, "no two lenses found"
+    return True, "held glasses frame"

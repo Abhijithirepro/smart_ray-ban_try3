@@ -5,15 +5,21 @@ of a pair of glasses is a pair of **Ray-Ban Meta / Ray-Ban Stories** smart
 glasses (which carry a small camera module in a top-outer corner of the frame)
 versus **normal eyeglasses**.
 
-The pipeline locates the glasses with classical CV — thresholding, contours,
-segmentation — to find the two top-outer corner crops where a camera would sit.
-The actual call (camera vs. rounded frame corner) is a structural/semantic
-distinction that hand-tuned circle and darkness cues provably cannot make (both
-are "a dark circle in the corner"), so a **tiny, self-contained classifier**
-makes it: a HOG descriptor over each corner crop feeds an L2-regularised logistic
-regression (pure numpy + the OpenCV HOG, no external ML dependency, weights in
-`models/camera_clf.npz`). The verdict is **entirely the classifier's** — there
-are no hand-tuned circle / glint / darkness measurements any more.
+The pipeline locates the glasses with classical CV — Haar face/eye cascades for
+worn glasses, thresholding/contours for held or studio shots — and crops the
+whole glasses **region**. A **learned CNN classifier** (MobileNetV3-small,
+transfer-learned, exported to ONNX and run in-browser via **onnxruntime-web**)
+then calls Ray-Ban-vs-normal on that region. See `train_region_clf.py`,
+`pipeline/region.py`, and `static/models/region_clf.onnx`.
+
+> **Why the CNN?** The original detector used a HOG + logistic classifier on each
+> top-outer corner crop (`models/camera_clf.npz`, still present as a fallback).
+> It is excellent on clean studio shots but provably **cannot** separate a
+> Ray-Ban camera module from an ordinary frame corner in real *worn* photos (both
+> reduce to "a dark blob by a face") — it flagged ~90% of people in normal glasses
+> as smart glasses. The whole-region CNN learns that distinction from data;
+> false positives on real worn normal glasses drop from ~90% toward the
+> single digits and keep improving as more training data is added (see `data/`).
 
 ---
 

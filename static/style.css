@@ -13,6 +13,7 @@
   --acid:       #c6f24e;   /* scanner chrome accent */
   --alert:      #ff4326;   /* META — camera detected */
   --safe:       #2fe0a8;   /* NORMAL — no module */
+  --warn:       #ffb03f;   /* MAYBE — one corner fired, check manually */
   --grid:       rgba(198, 242, 78, 0.045);
   --shadow:     0 30px 80px rgba(0,0,0,.55);
   --mono:       'Space Mono', ui-monospace, monospace;
@@ -141,6 +142,9 @@ body.has-result .stage { grid-template-columns: 1fr; }
   color: var(--fog); font-size: 13.5px; line-height: 1.7; max-width: 48ch;
 }
 .camera__video { width: 100%; height: auto; max-height: 70vh; display: block; object-fit: contain; }
+/* selfie-mirror the LIVE feed only (natural: move right -> preview moves right).
+   The intro clip (#intro) and overlays are not flipped. */
+#live { transform: scaleX(-1); }
 .camera__live { position: relative; width: 100%; }
 
 /* live preview corner framing, echoes the drop reticle */
@@ -284,6 +288,7 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .verdict__reason { font-size: 13.5px; color: var(--fog); line-height: 1.55; }
 .result.is-meta .verdict__text { color: var(--alert); text-shadow: 0 0 26px rgba(255,67,38,.4); }
 .result.is-normal .verdict__text { color: var(--safe); text-shadow: 0 0 26px rgba(47,224,168,.35); }
+.result.is-maybe .verdict__text { color: var(--warn); text-shadow: 0 0 26px rgba(255,176,63,.4); }
 
 /* meter */
 .meter__head { display: flex; justify-content: space-between; font-size: 11px; letter-spacing: .18em; color: var(--fog); margin-bottom: 8px; }
@@ -293,6 +298,7 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .meter__fill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 7px; background: var(--acid); transition: width .8s cubic-bezier(.2,.8,.2,1); }
 .result.is-meta .meter__fill { background: var(--alert); }
 .result.is-normal .meter__fill { background: var(--safe); }
+.result.is-maybe .meter__fill { background: var(--warn); }
 .meter__mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--chalk); opacity: .55; }
 
 /* corners — each shows the learned P(camera) and a pass/fail state */
@@ -306,6 +312,9 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .corner.is-cam .corner__state { color: var(--alert); font-weight: 700; }
 .corner.is-nocam .corner__score { color: var(--chalk); }
 .corner.is-nocam .corner__state { color: var(--safe); }
+.corner.is-maybe { border-color: var(--warn); background: rgba(255,176,63,.07); }
+.corner.is-maybe .corner__score { color: var(--warn); }
+.corner.is-maybe .corner__state { color: var(--warn); font-weight: 700; }
 
 /* why — plain-English reason for the verdict */
 .why__title { font-size: 11px; letter-spacing: .3em; color: var(--fog); }
@@ -316,6 +325,7 @@ body.has-result .stage { grid-template-columns: 1fr; }
 }
 .result.is-meta .why__text { border-left-color: var(--alert); }
 .result.is-normal .why__text { border-left-color: var(--safe); }
+.result.is-maybe .why__text { border-left-color: var(--warn); }
 
 /* again button */
 .again {

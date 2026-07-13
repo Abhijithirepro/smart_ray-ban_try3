@@ -1,9 +1,43 @@
 venv/
 .venv/
+.venv-train/
 debug/
 __pycache__/
 *.pyc
 .DS_Store
 .claude/
+
 # regenerable browser-port parity data (recreate via tools/dump_crops.py + dump_raw.py)
 tools/parity/
+
+# --- backend detector: regenerable / heavy artifacts ---
+# (comments MUST be on their own line — git does NOT support trailing inline # comments)
+# YOLO/RF-DETR/YOLOX training outputs + weights
+runs/
+# datasets: bootstrapped/augmented images, COCO/YOLO exports (all regenerable)
+data/
+# trained/base weights (yolo11s.pt, best.pt, best_ckpt.pth, ...)
+*.pt
+*.pth
+# regenerable eval sweeps
+detection_accuracy_yolo.csv
+detection_accuracy_yolox.csv
+# training artifacts / weights dir (weights large; reports regenerable). Anchored
+# so it does NOT match static/models/ (the site's ONNX models must ship).
+/models/
+
+# --- YOLOX vendored clone (re-clone + apply tools/yolox_mac.patch) ---
+third_party/
+
+# training / run logs
+*.log
+
+# --- image datasets & generated overlays: NOT for a public repo (contain faces),
+#     and not needed by the static site (which ships its models under static/) ---
+ray_ban_face/
+normal_glassess/
+hirepro_images_normal/
+actual_rayban_cases/
+detected_image_draw/
+detected_cameras/
+camera_marked_rayban/

@@ -19,7 +19,9 @@ from pipeline.segment import Segment
 @dataclass
 class CornerFeatures:
     side: str
-    cam_prob: float | None = None        # learned P(camera) for this corner crop
+    cam_prob: float | None = None        # peak learned P(camera) over candidates
+    best_roi: object | None = None       # the CornerROI that gave the peak
+    n_candidates: int = 0
 
 
 _CLF_CACHE = {}
@@ -35,14 +37,25 @@ def _load_clf(path: str):
 
 
 def extract(frames, seg: Segment, loc: Located, cfg: Config):
-    """Return {'L': CornerFeatures, 'R': CornerFeatures} with learned P(camera)."""
+    """Return {'L': CornerFeatures, 'R': CornerFeatures} with the PEAK learned
+    P(camera) over each side's candidate ROIs (a local search that absorbs
+    corner-placement imprecision, especially on the face-anchored path)."""
     clf = _load_clf(cfg.cam_clf_path)
     result = {}
-    for roi in loc.rois:
-        f = CornerFeatures(side=roi.side)
-        if clf is not None:
+    for side in ("L", "R"):
+        cands = loc.candidates.get(side, [])
+        f = CornerFeatures(side=side, n_candidates=len(cands))
+        if clf is not None and cands:
             from pipeline import camera_clf
-            f.cam_prob = round(
-                clf.prob_from_crop(camera_clf.corner_crop(frames, roi)), 3)
-        result[roi.side] = f
+            best_p, best_roi = -1.0, None
+            for roi in cands:
+                p = clf.prob_from_crop(camera_clf.corner_crop(frames, roi))
+                if p > best_p:
+                    best_p, best_roi = p, roi
+            f.cam_prob = round(best_p, 3)
+            f.best_roi = best_roi
+        result[side] = f
+    # keep loc.rois pointing at the chosen crops so viz shows what was scored
+    loc.rois = [result["L"].best_roi or loc.candidates["L"][0],
+                result["R"].best_roi or loc.candidates["R"][0]]
     return result

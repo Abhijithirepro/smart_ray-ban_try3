@@ -9,13 +9,132 @@
   /* current input mode: 'camera' (default) or 'upload' */
   var mode = 'camera';
 
-  /* the learned classifier weights ({w,b,mu,sd,thresh}); fetched on load */
+  /* the legacy HOG classifier weights ({w,b,mu,sd,thresh}); fallback only */
   var model = null;
   /* OpenCV.js runtime readiness */
   var cvReady = false;
+  /* Haar cascades (face + eye): settled once loaded OR confirmed unavailable */
+  var facesReady = false;
+  /* whole-region CNN (onnxruntime-web): fallback classifier */
+  var cnnReady = false;
+  /* corner module CNN (onnxruntime-web): the older per-corner classifier — kept as
+     a fallback if the YOLOX model fails to load */
+  var cornersReady = false;
+  /* YOLOX-Nano whole-glasses detector (onnxruntime-web): the PRIMARY detector —
+     the same model trained/run server-side (box + confidence -> META/NORMAL) */
+  var yoloxReady = false;
 
-  /** True once both OpenCV.js and the model JSON have loaded. */
-  function detectReady() { return cvReady && model !== null; }
+  /** True once the detector can run. YOLOX needs only cv + its ONNX session (no
+      Haar cascades); the legacy pipeline additionally needs the cascades. */
+  function detectReady() {
+    if (cvReady && yoloxReady) { return true; }
+    return cvReady && facesReady && (cornersReady || cnnReady || model !== null);
+  }
+
+  /** fetch a file as a Uint8Array (rejects on non-200). */
+  function fetchBytes(url) {
+    return fetch(url).then(function (r) {
+      if (!r.ok) { throw new Error('HTTP ' + r.status + ' for ' + url); }
+      return r.arrayBuffer();
+    }).then(function (buf) { return new Uint8Array(buf); });
+  }
+
+  /**
+   * Load the Haar cascades: 3 face (facedet) + 2 eye/eyeglasses (region). On any
+   * failure we still mark "ready" so detection degrades gracefully.
+   */
+  function loadFaceCascades(cv) {
+    var facedet = window.DET && window.DET.facedet;
+    var region = window.DET && window.DET.region;
+    if (!facedet) { facesReady = true; return; }
+    var base = 'static/haar/';
+    Promise.all([
+      fetchBytes(base + 'haarcascade_frontalface_default.xml'),
+      fetchBytes(base + 'haarcascade_frontalface_alt2.xml'),
+      fetchBytes(base + 'haarcascade_profileface.xml'),
+      fetchBytes(base + 'haarcascade_eye_tree_eyeglasses.xml'),
+      fetchBytes(base + 'haarcascade_eye.xml')
+    ]).then(function (b) {
+      facedet.load(cv, { frontalDefault: b[0], frontalAlt2: b[1], profile: b[2] });
+      if (region) { region.loadEyes(cv, { eyeglasses: b[3], eye: b[4] }); }
+      facesReady = true;
+      if (detectReady()) { setStatus('', ''); }
+    }).catch(function (e) {
+      if (window.console) { window.console.warn('cascades unavailable:', e); }
+      facesReady = true;
+      if (detectReady()) { setStatus('', ''); }
+    });
+  }
+
+  /**
+   * Load the whole-region CNN (ONNX) and its metadata via onnxruntime-web. On
+   * failure the detector falls back to the HOG corner classifier.
+   */
+  function loadCnnModel() {
+    var cnn = window.DET && window.DET.cnn;
+    if (!cnn || !window.ort) { return; }
+    /* absolute URL so ORT's dynamic import() of the wasm .mjs resolves (a bare
+       'static/ort/...' specifier throws "Failed to resolve module specifier") */
+    window.ort.env.wasm.wasmPaths = new URL('static/ort/', document.baseURI).href;
+    window.ort.env.wasm.numThreads = 1;   // no cross-origin isolation needed
+    Promise.all([
+      fetch('static/models/region_clf.meta.json').then(function (r) { return r.json(); }),
+      window.ort.InferenceSession.create('static/models/region_clf.onnx',
+        { executionProviders: ['wasm'] })
+    ]).then(function (res) {
+      cnn.setSession(res[1], res[0]);
+      cnnReady = true;
+      if (detectReady()) { setStatus('', ''); }
+    }).catch(function (e) {
+      if (window.console) { window.console.warn('CNN model unavailable, using HOG fallback:', e); }
+      if (detectReady()) { setStatus('', ''); }
+    });
+  }
+
+  /**
+   * Load the corner module CNN (the primary detector) + its metadata (tier
+   * thresholds, corner geometry). On failure the region CNN / HOG still work.
+   */
+  function loadCornerModel() {
+    var corners = window.DET && window.DET.corners;
+    if (!corners || !window.ort) { return; }
+    Promise.all([
+      fetch('static/models/corner_clf.meta.json').then(function (r) { return r.json(); }),
+      window.ort.InferenceSession.create('static/models/corner_clf.onnx',
+        { executionProviders: ['wasm'] })
+    ]).then(function (res) {
+      corners.setSession(res[1], res[0]);
+      cornersReady = true;
+      if (detectReady()) { setStatus('', ''); }
+    }).catch(function (e) {
+      if (window.console) { window.console.warn('corner model unavailable, using region CNN:', e); }
+      if (detectReady()) { setStatus('', ''); }
+    });
+  }
+
+  /**
+   * Load the YOLOX-Nano detector (ONNX) + its metadata (input size, strides,
+   * conf threshold) via onnxruntime-web. This is the primary detector; on failure
+   * the corner CNN / region CNN / HOG still handle detection.
+   */
+  function loadYoloxModel() {
+    var yolox = window.DET && window.DET.yolox;
+    if (!yolox || !window.ort) { return; }
+    window.ort.env.wasm.wasmPaths = new URL('static/ort/', document.baseURI).href;
+    window.ort.env.wasm.numThreads = 1;
+    Promise.all([
+      fetch('static/models/yolox.meta.json').then(function (r) { return r.json(); }),
+      window.ort.InferenceSession.create('static/models/yolox_nano_rayban.onnx',
+        { executionProviders: ['wasm'] })
+    ]).then(function (res) {
+      yolox.setSession(res[1], res[0]);
+      yoloxReady = true;
+      if (detectReady()) { setStatus('', ''); }
+    }).catch(function (e) {
+      if (window.console) { window.console.warn('YOLOX model unavailable, using corner/region pipeline:', e); }
+      if (detectReady()) { setStatus('', ''); }
+    });
+  }
 
   /** Run cb once the OpenCV.js wasm runtime is initialised (race-safe). */
   function whenCvReady(cb) {
@@ -87,7 +206,7 @@
    * @param {number} thr
    * @param {boolean} hasProb
    */
-  function renderCorner(scoreId, stateId, cardId, prob, thr, hasProb) {
+  function renderCorner(scoreId, stateId, cardId, prob, thr, hasProb, thrMaybe) {
     var sc = el(scoreId), st = el(stateId), card = el(cardId);
     if (!sc || !st || !card) { return; }
     if (!hasProb) {
@@ -96,7 +215,9 @@
     }
     sc.textContent = pct(prob);
     if (prob >= thr) { st.textContent = 'CAMERA'; card.className = 'corner is-cam'; }
-    else { st.textContent = 'no camera'; card.className = 'corner is-nocam'; }
+    else if (thrMaybe && prob >= thrMaybe) {
+      st.textContent = 'camera?'; card.className = 'corner is-maybe';
+    } else { st.textContent = 'no camera'; card.className = 'corner is-nocam'; }
   }
 
   /**
@@ -121,6 +242,13 @@
         '). Ray-Ban Meta glasses carry a camera in each corner, so both ' +
         'corners passing is what flags this as smart glasses.';
     }
+    if (payload.verdict === 'MAYBE') {
+      var hit = (cp.l >= cp.r) ? 'left' : 'right';
+      return 'One top-outer corner (' + hit + ') looks like a camera module ' +
+        '(left ' + L + ', right ' + R + ') but the other does not — typical ' +
+        'when the head is turned so only one corner faces the camera, or one ' +
+        'side is covered. Treat as possible smart glasses and check by eye.';
+    }
     var miss = (cp.l < thr && cp.r < thr) ? 'either corner' :
                (cp.l < thr ? 'the left corner' : 'the right corner');
     return 'No camera module in ' + miss + ' (left ' + L + ', right ' + R +
@@ -135,28 +263,36 @@
   function renderResult(payload) {
     var result = el('result');
     var isMeta = payload.verdict === 'META';
+    var isMaybe = payload.verdict === 'MAYBE';
     var threshold = payload.threshold || 0.5;
     var cp = camProbs(payload);
-    /* the meter shows the BINDING corner: both must pass, so the weaker one
-       is what the verdict hinges on */
-    var conf = cp.has ? Math.min(cp.l, cp.r) : 0;
+    /* Corner/HOG path: the meter shows the corner the verdict hinges on — the
+       weaker one for a YES call, the stronger one otherwise (that is what a
+       MAYBE hangs on). Region-CNN path: the single region probability. */
+    var conf = cp.has ? (isMeta ? Math.min(cp.l, cp.r) : Math.max(cp.l, cp.r))
+      : (typeof payload.overall_score === 'number' ? payload.overall_score : 0);
 
     el('overlay').src = payload.overlay || '';
-    el('verdict-text').textContent = isMeta ? 'SMART GLASSES' : 'NORMAL GLASSES';
+    el('verdict-text').textContent = isMeta ? 'SMART GLASSES'
+      : (isMaybe ? 'MAYBE — CHECK' : 'NORMAL GLASSES');
     el('verdict-reason').textContent = isMeta
       ? 'camera recognised in both corners'
-      : 'not smart glasses';
+      : (isMaybe ? 'a camera module may be present — one corner fired'
+                 : 'not smart glasses');
 
     el('conf-val').textContent = fmt(conf);
-    renderCorner('score-l', 'state-l', 'corner-l', cp.l, threshold, cp.has);
-    renderCorner('score-r', 'state-r', 'corner-r', cp.r, threshold, cp.has);
+    renderCorner('score-l', 'state-l', 'corner-l', cp.l, threshold, cp.has,
+      payload.threshold_maybe);
+    renderCorner('score-r', 'state-r', 'corner-r', cp.r, threshold, cp.has,
+      payload.threshold_maybe);
     el('why-text').textContent = whyText(payload, cp, threshold);
 
     /* the loop reruns automatically in camera mode, so hide the manual reset */
     var again = el('again');
     if (again) { again.hidden = (mode === 'camera'); }
 
-    result.className = 'result ' + (isMeta ? 'is-meta' : 'is-normal');
+    var cls = isMeta ? 'is-meta' : (isMaybe ? 'is-maybe' : 'is-normal');
+    result.className = 'result ' + cls;
     result.hidden = false;
     document.body.className = 'has-result';
 
@@ -168,7 +304,7 @@
       el('conf-mark').style.left = (threshold * 100) + '%';
     }, 120);
     window.setTimeout(function () {
-      result.className = 'result ' + (isMeta ? 'is-meta' : 'is-normal');
+      result.className = 'result ' + cls;
     }, 1100);
 
     setStatus('scan complete · ' + payload.segment_method + ' segmentation', '');
@@ -199,18 +335,15 @@
     var url = URL.createObjectURL(file);
     var img = new Image();
     img.onload = function () {
-      var payload;
-      try {
-        payload = runDetect(img);
-      } catch (e) {
+      runDetect(img).then(function (payload) {
+        URL.revokeObjectURL(url);
+        renderResult(payload);
+        done(true);
+      }, function (e) {
         URL.revokeObjectURL(url);
         setStatus('detector error: ' + (e && e.message ? e.message : e), 'error');
         done(false);
-        return;
-      }
-      URL.revokeObjectURL(url);
-      renderResult(payload);
-      done(true);
+      });
     };
     img.onerror = function () {
       URL.revokeObjectURL(url);
@@ -240,14 +373,32 @@
     ctx.drawImage(img, 0, 0, w, h);
     var id = ctx.getImageData(0, 0, w, h);
     var src = cv.matFromImageData(id);
-    var payload;
-    try {
-      payload = window.DET.detectMat(src, cv, model, window.DET.config);
-    } finally {
-      src.delete();
+    /* Primary: YOLOX-Nano on the FULL-RES mat (box + confidence -> META/NORMAL),
+       the same model run server-side. It always resolves to a payload. Fallbacks
+       (only if YOLOX failed to load): corner CNN -> region CNN -> legacy HOG. */
+    var pending;
+    if (yoloxReady) {
+      pending = window.DET.yolox.detect(src, cv);
+    } else if (cornersReady) {
+      pending = window.DET.corners.detect(src, cv).then(function (payload) {
+        if (payload) { return payload; }
+        if (cnnReady) { return window.DET.detectRegion(src, cv, window.DET.config); }
+        if (model) { return window.DET.detectMat(src, cv, model, window.DET.config); }
+        throw new Error('no face found and no fallback detector loaded');
+      });
+    } else if (cnnReady) {
+      pending = window.DET.detectRegion(src, cv, window.DET.config);
+    } else {
+      pending = Promise.resolve(window.DET.detectMat(src, cv, model, window.DET.config));
     }
-    payload.overlay = buildOverlay(img, payload);
-    return payload;
+    return pending.then(function (payload) {
+      src.delete();
+      payload.overlay = buildOverlay(img, payload);
+      return payload;
+    }, function (err) {
+      src.delete();
+      throw err;
+    });
   }
 
   /**
@@ -270,8 +421,24 @@
       ctx.strokeStyle = color; ctx.lineWidth = lw || 2;
       ctx.strokeRect(x, y, w, h);
     }
+    /* CNN path: draw the located glasses region the model classified */
+    if (g.region) {
+      var isM = payload.verdict === 'META';
+      rect(g.region[0], g.region[1], g.region[2], g.region[3], isM ? '#ff4d4d' : '#c6f24e', 3);
+    }
     var bb = g.bbox || payload.bbox;
-    if (bb) { rect(bb[0], bb[1], bb[2], bb[3], '#2d7dff', 2); }
+    if (bb && !g.region) { rect(bb[0], bb[1], bb[2], bb[3], '#2d7dff', 2); }
+    /* YOLOX path: mark each camera module at the top-outer end-pieces */
+    (g.cameras || []).forEach(function (pt) {
+      var rC = Math.max(6, Math.round(0.03 * ((g.region && g.region[2]) || 40)));
+      ctx.strokeStyle = '#ff4d4d'; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(pt[0], pt[1], rC, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(pt[0] - rC, pt[1]); ctx.lineTo(pt[0] + rC, pt[1]);
+      ctx.moveTo(pt[0], pt[1] - rC); ctx.lineTo(pt[0], pt[1] + rC); ctx.stroke();
+      ctx.fillStyle = '#ff4d4d'; ctx.font = '14px "Space Mono", monospace';
+      ctx.fillText('camera', pt[0] - rC, Math.max(12, pt[1] - rC - 4));
+    });
     [g.lensL, g.lensR].forEach(function (ln) {
       if (!ln) { return; }
       rect(ln.cx - ln.hw, ln.cy - ln.hh, ln.hw * 2, ln.hh * 2, '#27e08a', 1);
@@ -284,15 +451,23 @@
       ctx.fillText(roi.side + (p == null ? '' : '  Pcam=' + fmt(p)),
         roi.x, Math.max(12, roi.y - 4));
     });
+    /* face box (corner-detector path) */
+    if (g.face) { rect(g.face[0], g.face[1], g.face[2], g.face[3], '#2d7dff', 1); }
     /* header banner */
     var isMeta = payload.verdict === 'META';
+    var isMaybe = payload.verdict === 'MAYBE';
     ctx.fillStyle = 'rgba(0,0,0,0.78)';
     ctx.fillRect(0, 0, W, 28);
-    ctx.fillStyle = isMeta ? '#ff4d4d' : '#27e08a';
+    ctx.fillStyle = isMeta ? '#ff4d4d' : (isMaybe ? '#ffb03f' : '#27e08a');
     ctx.font = '700 16px "Space Mono", monospace';
     var pL = payload.prob_left, pR = payload.prob_right;
-    var banner = payload.verdict + (pL == null ? '' :
-      '  Pcam L=' + fmt(pL) + ' R=' + fmt(pR));
+    var banner;
+    if (g.region) {
+      banner = payload.verdict + '  P=' + fmt(payload.overall_score || 0);
+    } else {
+      banner = payload.verdict + (pL == null ? '' :
+        '  Pcam L=' + fmt(pL) + ' R=' + fmt(pR));
+    }
     ctx.fillText(banner, 6, 20);
     return c.toDataURL('image/png');
   }
@@ -307,6 +482,8 @@
 
   var CYCLE_SECONDS = 5;       // live-preview countdown before each capture
   var RESULT_HOLD_MS = 3000;   // how long a verdict stays before the next cycle
+  var BURST_FRAMES = 5;        // frames grabbed per analysed pose (CNN path)
+  var BURST_GAP_MS = 200;      // spacing between burst frames (~1s total window)
 
   /* The guided capture sequence: one entry per pose. Pressing START walks these
      in order — show this pose, count down 5s, grab a frame — then stops by
@@ -717,21 +894,140 @@
   }
 
   /**
-   * Grab the current live frame to a canvas, keep it in `captures`, and — only
-   * for poses flagged analyze:true — run the detector on it. The left/right side
-   * frames are captured but NOT analysed (kept for later use); the front pose is
-   * the one that gets a verdict.
+   * Grab the current live video frame to a fresh canvas, mirrored to match the
+   * selfie-mirrored preview (CSS scaleX(-1) on #live) so a saved frame matches
+   * what the user saw. Detection is unaffected — the classifier is flip-invariant.
+   * @param {HTMLVideoElement} live
+   * @returns {HTMLCanvasElement}
+   */
+  function grabLiveFrame(live) {
+    var w = live.videoWidth || 1280;
+    var h = live.videoHeight || 720;
+    var canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    var g = canvas.getContext('2d');
+    g.save();
+    g.translate(w, 0);
+    g.scale(-1, 1);
+    g.drawImage(live, 0, 0, w, h);
+    g.restore();
+    return canvas;
+  }
+
+  /**
+   * Grab a burst of `n` live frames spaced `gapMs` apart (the video keeps playing,
+   * so they are genuinely different frames over a ~1s window). Uses later() so a
+   * mode switch / clearTimers() aborts cleanly. Resolves to the canvas array.
+   * @returns {Promise<HTMLCanvasElement[]>}
+   */
+  function captureBurst(live, n, gapMs) {
+    return new Promise(function (resolve) {
+      var frames = [];
+      var grabNext = function () {
+        if (mode !== 'camera') { resolve(frames); return; }
+        frames.push(grabLiveFrame(live));
+        el('cam-state').textContent = 'captured · analysing frame ' +
+          frames.length + '/' + n + ' …';
+        if (frames.length >= n) { resolve(frames); return; }
+        later(grabNext, gapMs);
+      };
+      grabNext();
+    });
+  }
+
+  /**
+   * Run the CNN detector on each burst frame SEQUENTIALLY (ORT wasm is
+   * single-threaded; sequential runs bound cv.Mat memory). Frames that error are
+   * skipped. Resolves to [{payload, prob}] for the frames that succeeded.
+   * @returns {Promise<Array<{payload:Object, prob:number}>>}
+   */
+  function detectBurst(frames) {
+    var results = [];
+    var chain = Promise.resolve();
+    frames.forEach(function (canvas) {
+      chain = chain.then(function () {
+        if (mode !== 'camera') { return; }
+        return runDetect(canvas).then(function (payload) {
+          results.push({ payload: payload,
+            prob: (typeof payload.overall_score === 'number' ? payload.overall_score : 0) });
+        }, function () { /* skip a failed frame */ });
+      });
+    });
+    return chain.then(function () { return results; });
+  }
+
+  /** Median of a numeric array (average of the middle two when even). */
+  function median(arr) {
+    var s = arr.slice().sort(function (a, b) { return a - b; });
+    var mid = Math.floor(s.length / 2);
+    return (s.length % 2) ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  }
+
+  /**
+   * Aggregate burst results by MEDIAN probability. For an odd count the median is
+   * exactly the majority vote (median >= thr iff most frames >= thr) but also
+   * yields a calibrated meter value and shrugs off <=2 outlier frames (blur,
+   * blink, face-detect wobble). Corner-detector frames aggregate PER SIDE and the
+   * three-tier verdict is recomputed on the median pair; region-CNN frames
+   * aggregate the single region probability. Returns the representative frame's
+   * payload with its verdict/score/reason overwritten, or null if none.
+   */
+  function aggregateBurst(results) {
+    if (!results.length) { return null; }
+    var corner = results.filter(function (r) {
+      return r.payload.per_corner && r.payload.per_corner.L &&
+        typeof r.payload.per_corner.L.cam_prob === 'number';
+    });
+    /* corner path on a majority of frames: median per side + tier verdict */
+    if (corner.length >= results.length / 2 && window.DET.corners &&
+        window.DET.corners.ready()) {
+      var mL = median(corner.map(function (r) { return r.payload.per_corner.L.cam_prob; }));
+      var mR = median(corner.map(function (r) { return r.payload.per_corner.R.cam_prob; }));
+      var v = window.DET.corners.tier(mL, mR);
+      var repC = corner[Math.floor(corner.length / 2)].payload;
+      var r3 = function (p) { return Math.round(p * 1000) / 1000; };
+      repC.per_corner = { L: { cam_prob: r3(mL) }, R: { cam_prob: r3(mR) } };
+      repC.prob_left = r3(mL); repC.prob_right = r3(mR);
+      repC.overall_score = r3(Math.max(mL, mR));
+      repC.verdict = (v === 'YES') ? 'META' : (v === 'MAYBE' ? 'MAYBE' : 'NORMAL');
+      repC.tier = v;
+      repC.reason = {
+        YES: 'camera module recognised in BOTH corners',
+        MAYBE: 'a camera module may be present (one corner) — check manually',
+        NO: 'no camera module found'
+      }[v] + ' — median of ' + corner.length + '/' + BURST_FRAMES +
+        ' frames (L=' + r3(mL) + ' R=' + r3(mR) + ')';
+      return repC;
+    }
+    /* region-CNN path: median of the single probability */
+    var sorted = results.slice().sort(function (a, b) { return a.prob - b.prob; });
+    var mid = Math.floor(sorted.length / 2);
+    var medProb = (sorted.length % 2)
+      ? sorted[mid].prob
+      : (sorted[mid - 1].prob + sorted[mid].prob) / 2;
+    var rep = sorted[mid].payload;              // a real frame near the median (for overlay)
+    var thr = (typeof rep.threshold === 'number') ? rep.threshold : 0.5;
+    var isMeta = medProb >= thr;
+    var pctP = Math.round(medProb * 100) / 100;
+    rep.overall_score = medProb;
+    rep.verdict = isMeta ? 'META' : 'NORMAL';
+    rep.reason = (isMeta ? 'camera glasses recognised' : 'no camera module found') +
+      ' — median P=' + pctP + ' over ' + results.length + '/' + BURST_FRAMES + ' frames';
+    return rep;
+  }
+
+  /**
+   * Grab the current live frame(s), keep them in `captures`, and — only for poses
+   * flagged analyze:true — run the detector. Left/right side frames are captured
+   * but NOT analysed (kept for later use). The front pose gets a verdict: with the
+   * CNN it is a 5-frame burst reduced to the median probability (kills flickery
+   * single-frame false positives); the legacy HOG path stays single-frame.
    */
   function captureFrame() {
     if (mode !== 'camera') { return; }
     var step = sequence[stepIndex];
     var live = el('live');
-    var canvas = el('grab');
-    var w = live.videoWidth || 1280;
-    var h = live.videoHeight || 720;
-    canvas.width = w;
-    canvas.height = h;
-    canvas.getContext('2d').drawImage(live, 0, 0, w, h);
     el('pose-banner').hidden = true;
 
     /* advance to the next pose after `holdMs`, or stop after the last one */
@@ -741,18 +1037,44 @@
       later(stepIndex < sequence.length ? runCycle : finishSequence, holdMs);
     };
 
-    /* always keep the frame; what differs is whether we analyse it */
-    captures.push({ key: step.key, dataUrl: canvas.toDataURL('image/png') });
-
     if (!step.analyze) {
-      /* left / right side: capture only, no detection */
+      /* left / right side: capture one frame, no detection */
+      captures.push({ key: step.key, dataUrl: grabLiveFrame(live).toDataURL('image/png') });
       el('cam-state').textContent = step.label + ' captured ✓';
       setStatus(step.label + ' captured — hold on …', '');
       advance(RESULT_HOLD_MS);
       return;
     }
 
-    /* front pose: run the detector and show the verdict */
+    /* front pose. Corner/region CNN available -> 5-frame burst + median vote. */
+    if (cornersReady || cnnReady) {
+      el('cam-state').textContent = 'captured · analysing …';
+      setStatus('analysing a burst of frames …', 'busy');
+      captureBurst(live, BURST_FRAMES, BURST_GAP_MS).then(function (frames) {
+        if (mode !== 'camera' || !frames.length) { return advance(RESULT_HOLD_MS); }
+        /* keep every burst frame for later use / hard-example collection */
+        frames.forEach(function (c, i) {
+          captures.push({ key: step.key + '-b' + (i + 1),
+            dataUrl: c.toDataURL('image/png') });
+        });
+        detectBurst(frames).then(function (results) {
+          if (mode !== 'camera') { return; }
+          var payload = aggregateBurst(results);
+          if (!payload) {
+            setStatus('all burst frames failed to analyse — retrying next cycle', 'error');
+            advance(RESULT_HOLD_MS);
+            return;
+          }
+          renderResult(payload);
+          advance(RESULT_HOLD_MS);
+        });
+      });
+      return;
+    }
+
+    /* legacy HOG fallback: single-frame verdict (payloads carry no overall_score) */
+    var canvas = grabLiveFrame(live);
+    captures.push({ key: step.key, dataUrl: canvas.toDataURL('image/png') });
     el('cam-state').textContent = 'captured · analysing …';
     if (canvas.toBlob) {
       canvas.toBlob(function (blob) {
@@ -794,15 +1116,20 @@
     var input = el('file');
     var again = el('again');
 
-    /* load the classifier weights and the OpenCV.js runtime up front */
+    /* load models + the OpenCV.js runtime up front. Primary: the region CNN
+       (onnxruntime-web). Fallback: the legacy HOG corner classifier JSON. */
     setStatus('loading detector …', 'busy');
     fetch('static/camera_clf.json')
       .then(function (r) { return r.json(); })
-      .then(function (m) { model = m; if (cvReady) { setStatus('', ''); } })
-      .catch(function () { setStatus('could not load model weights', 'error'); });
+      .then(function (m) { model = m; if (detectReady()) { setStatus('', ''); } })
+      .catch(function () { /* HOG is only a fallback; CNN may still load */ });
+    loadYoloxModel();   // YOLOX-Nano — the primary detector (async, own readiness)
+    loadCnnModel();     // region CNN fallback (async, own readiness)
+    loadCornerModel();  // corner module CNN — fallback if YOLOX fails to load
     whenCvReady(function () {
       cvReady = true;
-      if (model !== null) { setStatus('', ''); }
+      loadFaceCascades(window.cv);   // face + eye cascades; needs the wasm runtime up
+      if (detectReady()) { setStatus('', ''); }
     });
 
     if (input) {

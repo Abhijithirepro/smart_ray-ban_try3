@@ -32,13 +32,18 @@ def annotate(frames, seg: Segment, loc: Located, feats: dict,
              verdict: Verdict) -> np.ndarray:
     img = frames.color.copy()
 
-    x, y, w, h = seg.bbox
-    cv2.rectangle(img, (x, y), (x + w, y + h), BLUE, 2)
-
-    for lens in (loc.lens_left, loc.lens_right):
-        cv2.rectangle(img, (_i(lens.cx - lens.hw), _i(lens.cy - lens.hh)),
-                      (_i(lens.cx + lens.hw), _i(lens.cy + lens.hh)), GREEN, 1)
-        cv2.circle(img, (_i(lens.cx), _i(lens.cy)), 3, GREEN, -1)
+    if loc.path == "face" and loc.face is not None:
+        f = loc.face
+        cv2.rectangle(img, (f.x, f.y), (f.x + f.w, f.y + f.h), BLUE, 2)
+    else:
+        x, y, w, h = seg.bbox
+        cv2.rectangle(img, (x, y), (x + w, y + h), BLUE, 2)
+        for lens in (loc.lens_left, loc.lens_right):
+            if lens is None:
+                continue
+            cv2.rectangle(img, (_i(lens.cx - lens.hw), _i(lens.cy - lens.hh)),
+                          (_i(lens.cx + lens.hw), _i(lens.cy + lens.hh)), GREEN, 1)
+            cv2.circle(img, (_i(lens.cx), _i(lens.cy)), 3, GREEN, -1)
 
     for roi in loc.rois:
         cv2.rectangle(img, (roi.x, roi.y),
@@ -87,12 +92,17 @@ def features_to_dict(feats: dict, loc: Located, seg: Segment,
         "prob_right": verdict.prob_right,
         "fired_corner": verdict.fired_corner,
         "reason": verdict.reason,
+        "path": loc.path,
         "r_lens": round(loc.r_lens, 2),
         "bbox": list(seg.bbox),
+        "face": ([loc.face.x, loc.face.y, loc.face.w, loc.face.h]
+                 if loc.face is not None else None),
         "segment_method": seg.method,
         "locate_method": loc.method,
-        "lens_centers": {"L": [round(loc.lens_left.cx, 1), round(loc.lens_left.cy, 1)],
-                         "R": [round(loc.lens_right.cx, 1), round(loc.lens_right.cy, 1)]},
+        "lens_centers": (
+            {"L": [round(loc.lens_left.cx, 1), round(loc.lens_left.cy, 1)],
+             "R": [round(loc.lens_right.cx, 1), round(loc.lens_right.cy, 1)]}
+            if loc.lens_left is not None and loc.lens_right is not None else None),
         "per_corner": {"L": {"cam_prob": feats["L"].cam_prob},
                        "R": {"cam_prob": feats["R"].cam_prob}},
     }

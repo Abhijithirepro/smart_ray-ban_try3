@@ -154,20 +154,27 @@
   </main>
 
   <footer class="footer">
-    <span>in-browser CV · learned camera verifier per corner</span>
-    <span>smart glasses only when BOTH corners are cameras</span>
+    <span>in-browser CV · camera-module CNN per top-outer corner</span>
+    <span>BOTH corners = smart glasses · one corner = maybe, check</span>
   </footer>
 
   <!-- OpenCV.js (self-contained, embedded wasm); sets window.cv asynchronously -->
   <script async src="static/opencv.js"></script>
+  <!-- onnxruntime-web (wasm backend); sets window.ort for the region CNN -->
+  <script src="static/ort/ort.wasm.min.js"></script>
   <!-- detector pipeline (hog must precede camera_clf) -->
   <script src="static/detector/config.js"></script>
   <script src="static/detector/hog.js"></script>
   <script src="static/detector/camera_clf.js"></script>
   <script src="static/detector/preprocess.js"></script>
   <script src="static/detector/segment.js"></script>
+  <script src="static/detector/facedet.js"></script>
+  <script src="static/detector/region.js"></script>
+  <script src="static/detector/cnn.js"></script>
+  <script src="static/detector/corners.js"></script>
   <script src="static/detector/locate.js"></script>
   <script src="static/detector/decide.js"></script>
+  <script src="static/detector/yolox.js"></script>
   <script src="static/detector/index.js"></script>
   <!-- UI controller -->
   <script src="static/app.js"></script>
