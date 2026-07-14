@@ -273,6 +273,7 @@
       : (typeof payload.overall_score === 'number' ? payload.overall_score : 0);
 
     el('overlay').src = payload.overlay || '';
+    lastOverlay = payload.overlay || null;   // kept for the DOWNLOAD button
     el('verdict-text').textContent = isMeta ? 'SMART GLASSES'
       : (isMaybe ? 'MAYBE — CHECK' : 'NORMAL GLASSES');
     el('verdict-reason').textContent = isMeta
@@ -287,9 +288,12 @@
       payload.threshold_maybe);
     el('why-text').textContent = whyText(payload, cp, threshold);
 
-    /* the loop reruns automatically in camera mode, so hide the manual reset */
+    /* result actions: RE-CAPTURE (camera) or SCAN ANOTHER (upload), plus DOWNLOAD */
     var again = el('again');
-    if (again) { again.hidden = (mode === 'camera'); }
+    if (again) {
+      again.hidden = false;
+      again.textContent = (mode === 'camera') ? 'RE-CAPTURE' : 'SCAN ANOTHER';
+    }
 
     var cls = isMeta ? 'is-meta' : (isMaybe ? 'is-maybe' : 'is-normal');
     result.className = 'result ' + cls;
@@ -335,6 +339,14 @@
     var url = URL.createObjectURL(file);
     var img = new Image();
     img.onload = function () {
+      /* keep the source image (re-encoded to PNG) for the DOWNLOAD button */
+      try {
+        var pc = document.createElement('canvas');
+        pc.width = img.naturalWidth || img.width;
+        pc.height = img.naturalHeight || img.height;
+        pc.getContext('2d').drawImage(img, 0, 0);
+        lastPhoto = pc.toDataURL('image/png');
+      } catch (e) { lastPhoto = null; }
       runDetect(img).then(function (payload) {
         URL.revokeObjectURL(url);
         renderResult(payload);
@@ -473,99 +485,23 @@
   }
 
   /* ======================================================================
-     LIVE CAMERA MODE
-     The how-it-works clip plays in the intro column (a separate place), while
-     the camera scene shows the live feed straight away:
-     enter → live preview + START (clip auto-plays alongside)
-           → START → [5s countdown → grab → analyse]∞
+     LIVE CAMERA MODE — single-shot capture
+     enter → live preview + CAPTURE PHOTO → grab one frame → analyse → verdict.
+     The result panel offers RE-CAPTURE (back to the live feed) and DOWNLOAD
+     (the plain captured photo + the annotated result image).
      ====================================================================== */
 
-  var CYCLE_SECONDS = 5;       // live-preview countdown before each capture
-  var RESULT_HOLD_MS = 3000;   // how long a verdict stays before the next cycle
-  var BURST_FRAMES = 5;        // frames grabbed per analysed pose (CNN path)
-  var BURST_GAP_MS = 200;      // spacing between burst frames (~1s total window)
+  var stream = null;      // the active MediaStream (kept across captures)
+  var timers = [];        // pending setTimeout handles (cleared on mode switch)
+  /* the most recent capture + its annotated overlay, for the DOWNLOAD button */
+  var lastPhoto = null;   // PNG data URI of the captured/uploaded frame
+  var lastOverlay = null; // PNG data URI of the annotated result
 
-  /* The guided capture sequence: one entry per pose. Pressing START walks these
-     in order — show this pose, count down 5s, grab a frame — then stops by
-     itself after the last pose. Only poses with analyze:true run the detector;
-     the left/right side frames are just captured and kept (see `captures`) for
-     later use. `label`/`arrow` drive the on-screen "which side" banner. */
-  var STEPS = [
-    { key: 'left',  analyze: false, arrow: '◀', side: 'left',
-      label: 'LEFT SIDE',
-      prompt: 'Turn the glasses so their LEFT side faces the camera' },
-    { key: 'right', analyze: false, arrow: '▶', side: 'right',
-      label: 'RIGHT SIDE',
-      prompt: 'Now turn so the RIGHT side faces the camera' },
-    { key: 'straight', analyze: true, arrow: '', side: '',
-      label: 'FRONT · STRAIGHT ON',
-      prompt: 'Now hold the glasses straight on, facing the camera' }
-  ];
-
-  /* the front/straight pose on its own — used for "CAPTURE AGAIN", which re-runs
-     only the analysed pose and skips the left/right side captures */
-  var STRAIGHT_STEP = STEPS[STEPS.length - 1];
-
-  var stream = null;           // the active MediaStream (kept across cycles)
-  var screenStream = null;     // the shared-tab MediaStream being recorded
-  var recorder = null;         // MediaRecorder over screenStream
-  var recordedChunks = [];     // accumulated recording data blobs
-  var recordingActive = false; // true while the screen recording is running
-  var timers = [];             // pending setTimeout handles
-  var ticker = null;           // the countdown setInterval handle
-  var sequence = STEPS;        // the pose list the current run walks
-  var stepIndex = 0;           // which pose in `sequence` is being captured
-  var captures = [];           // {key, dataUrl} per captured pose, kept for later
-  var didFullRun = false;      // true once the full left/right/straight run is done
-  var spokenOnce = false;      // the instructions narration plays only once per load
-
-  /* expose the captured pose frames so later steps can pick them up */
-  window.SCAN_CAPTURES = captures;
-
-  /**
-   * Speak the instructions once. Browsers block autoplay-with-sound until a
-   * user gesture, so if play() is rejected we retry on the first tap/click.
-   */
-  function playInstructions() {
-    if (spokenOnce) { return; }
-    var audio = el('intro-audio');
-    if (!audio) { return; }
-    spokenOnce = true;
-    var fired = false;
-    var go = function () {
-      if (fired) { return; }
-      fired = true;
-      try { audio.currentTime = 0; } catch (e) {}
-      audio.play();
-    };
-    var p = audio.play();
-    if (p && typeof p.catch === 'function') {
-      p.catch(function () {
-        /* autoplay blocked — arm a one-shot gesture listener to start it */
-        var unlock = function () {
-          document.removeEventListener('pointerdown', unlock);
-          document.removeEventListener('keydown', unlock);
-          go();
-        };
-        document.addEventListener('pointerdown', unlock);
-        document.addEventListener('keydown', unlock);
-      });
-    }
-  }
-
-  /** Clear every pending timer/interval so a mode switch fully stops the loop. */
+  /** Clear every pending timer so a mode switch fully stops any deferred work. */
   function clearTimers() {
     var i;
     for (i = 0; i < timers.length; i += 1) { window.clearTimeout(timers[i]); }
     timers = [];
-    if (ticker !== null) { window.clearInterval(ticker); ticker = null; }
-  }
-
-  /** setTimeout that registers its handle for clearTimers(). */
-  function later(fn, ms) {
-    var id = window.setTimeout(fn, ms);
-    timers.push(id);
-    return id;
   }
 
   /** Toggle the [hidden] attribute on an element by id (null-safe). */
@@ -576,16 +512,11 @@
 
   /**
    * Enter live-camera mode: request the webcam, then show the live preview with
-   * START straight away in the camera scene while the how-it-works clip plays in
-   * the intro column. The clip never occupies the camera scene.
+   * the CAPTURE PHOTO control straight away. No audio, no clip, no recording.
    */
   function enterCamera() {
     mode = 'camera';
     clearTimers();
-    /* fresh entry → next run is the full left/right/straight sequence */
-    didFullRun = false;
-    setStartLabel('START&nbsp;TEST');
-    show('cam-end', false);
     show('camera-mode', true);
     show('upload-mode', false);
     show('live-wrap', false);
@@ -594,11 +525,8 @@
     el('cam-instruction').textContent =
       'Initialising camera … allow access when prompted.';
 
-    playIntro();          // clip lives in the intro column, independent of the feed
-    playInstructions();   // spoken instructions, once per page load
-
     if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      setStatus('this browser has no camera access; use Upload Image', 'error');
+      setStatus('this browser has no camera access; use Image Upload', 'error');
       return;
     }
     navigator.mediaDevices.getUserMedia({ video: true })
@@ -608,138 +536,35 @@
         readyToScan();
       })
       .catch(function () {
-        setStatus('camera access denied — switch to Upload Image instead', 'error');
+        setStatus('camera access denied — switch to Image Upload instead', 'error');
       });
   }
 
   /**
-   * Show the live self-view preview plus the START control, ready for the user
-   * to begin scanning whenever they like.
+   * Show the live self-view preview plus the CAPTURE PHOTO control, ready for
+   * the user to take a shot whenever they like.
    */
   function readyToScan() {
     if (mode !== 'camera' || !stream) { return; }
     show('cam-instruction', false);
     var live = el('live');
     live.srcObject = stream;
-    el('countdown').hidden = true;
     el('cam-state').textContent = '';
     show('live-wrap', true);
     show('cam-controls', true);
-    setStatus('watch the how-it-works clip, then press START TEST to scan', '');
+    setStatus('press CAPTURE PHOTO to scan', '');
   }
 
-  /**
-   * Play the instructional clip from the start, in its own panel in the intro
-   * column. Used on camera entry; failures (blocked autoplay) are silent.
-   */
-  function playIntro() {
-    show('intro-clip', true);
-    var intro = el('intro');
-    if (!intro) { return; }
-    intro.currentTime = 0;
-    var p = intro.play();
-    if (p && typeof p.catch === 'function') { p.catch(function () {}); }
-  }
-
-  /** Leave camera mode: stop the loop, release the webcam, reset the UI. */
+  /** Leave camera mode: stop any deferred work, release the webcam, reset UI. */
   function leaveCamera() {
     clearTimers();
-    var intro = el('intro');
-    if (intro) { intro.pause(); }
-    show('intro-clip', false);
     if (stream) {
       stream.getTracks().forEach(function (t) { t.stop(); });
       stream = null;
     }
-    /* release the shared tab if a recording is still running (discarded) */
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.onstop = null;
-      try { recorder.stop(); } catch (e) {}
-    }
-    if (screenStream) {
-      screenStream.getTracks().forEach(function (t) { t.stop(); });
-      screenStream = null;
-    }
-    recorder = null;
-    recordingActive = false;
-    show('cam-end', false);
     var live = el('live');
     if (live) { live.srcObject = null; }
     show('camera-mode', false);
-  }
-
-  /**
-   * Ask the user to share this tab and start recording it. Must be called from a
-   * user gesture (browsers block screen-share otherwise). Resolves to true once
-   * recording is running, false if unsupported or the user cancels the prompt.
-   * @returns {Promise<boolean>}
-   */
-  function startScreenRecording() {
-    if (recordingActive) { return Promise.resolve(true); }
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia ||
-        typeof window.MediaRecorder === 'undefined') {
-      return Promise.resolve(false);
-    }
-    /* preferCurrentTab nudges Chrome to offer THIS tab first */
-    var opts = { video: { frameRate: 30 }, audio: false, preferCurrentTab: true };
-    return navigator.mediaDevices.getDisplayMedia(opts).then(function (s) {
-      screenStream = s;
-      recordedChunks = [];
-      var mime = '';
-      var prefs = ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm'];
-      for (var i = 0; i < prefs.length; i += 1) {
-        if (window.MediaRecorder.isTypeSupported &&
-            window.MediaRecorder.isTypeSupported(prefs[i])) { mime = prefs[i]; break; }
-      }
-      recorder = mime ? new window.MediaRecorder(s, { mimeType: mime })
-                      : new window.MediaRecorder(s);
-      recorder.ondataavailable = function (e) {
-        if (e.data && e.data.size > 0) { recordedChunks.push(e.data); }
-      };
-      recorder.start();
-      recordingActive = true;
-      /* if the user stops sharing from the browser's own UI, reflect that */
-      s.getVideoTracks().forEach(function (t) {
-        t.addEventListener('ended', function () { recordingActive = false; });
-      });
-      return true;
-    }).catch(function () { return false; });
-  }
-
-  /**
-   * Stop the screen recording, assemble the captured chunks into a WebM blob and
-   * trigger a download. Safe to call when nothing was recorded.
-   */
-  function stopRecordingAndDownload() {
-    var finalize = function () {
-      var type = (recordedChunks[0] && recordedChunks[0].type) || 'video/webm';
-      var blob = new Blob(recordedChunks, { type: type });
-      if (screenStream) {
-        screenStream.getTracks().forEach(function (t) { t.stop(); });
-        screenStream = null;
-      }
-      recordingActive = false;
-      recorder = null;
-      if (!blob.size) {
-        setStatus('no screen recording was captured', 'error');
-        return;
-      }
-      var url = URL.createObjectURL(blob);
-      var a = document.createElement('a');
-      a.href = url;
-      a.download = 'module-scan-recording.webm';
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      window.setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
-      setStatus('recording downloaded · module-scan-recording.webm', '');
-    };
-    if (recorder && recorder.state !== 'inactive') {
-      recorder.onstop = finalize;
-      recorder.stop();
-    } else {
-      finalize();
-    }
   }
 
   /** Trigger a download of a data URI / blob URL under the given filename. */
@@ -753,144 +578,41 @@
   }
 
   /**
-   * Download every captured pose photo. Each is a PNG data URI in `captures`,
-   * named by capture order and pose key (e.g. 01-left.png, 03-straight.png).
-   * Downloads are staggered so browsers don't collapse them into one.
-   * @returns {number} how many photos were queued for download
+   * CAPTURE PHOTO handler: grab the current live frame, keep it for download,
+   * then run the same detector/render path uploads use. One frame, no countdown.
    */
-  function downloadCaptures() {
-    captures.forEach(function (cap, i) {
-      var n = (i + 1 < 10 ? '0' : '') + (i + 1);
-      window.setTimeout(function () {
-        triggerDownload(cap.dataUrl, n + '-' + cap.key + '.png');
-      }, i * 350);
-    });
-    return captures.length;
-  }
-
-  /** START handler: begin the guided three-pose capture sequence. */
-  function startLoop() {
+  function captureAndAnalyze() {
     if (mode !== 'camera' || !stream) { return; }
-    show('cam-controls', false);
-    show('cam-instruction', false);
     var live = el('live');
-    live.srcObject = stream;
-    show('cam-end', false);
-
-    var begin = function () {
+    var canvas = grabLiveFrame(live);
+    lastPhoto = canvas.toDataURL('image/png');
+    show('cam-controls', false);
+    el('cam-state').textContent = 'captured · analysing …';
+    setStatus('scanning corners for a camera module', 'busy');
+    runDetect(canvas).then(function (payload) {
       if (mode !== 'camera') { return; }
-      show('cam-controls', false);
-      /* first run walks all three poses; after that, "CAPTURE AGAIN" re-runs
-         only the straight pose through analysis */
-      sequence = didFullRun ? [STRAIGHT_STEP] : STEPS;
-      stepIndex = 0;
-      /* full run starts a fresh capture set; recaptures append, so every photo
-         taken this session (left, right, straight + any retakes) is kept and
-         downloaded on END */
-      if (!didFullRun) { captures.length = 0; }
-      runCycle();
-    };
-
-    /* recording runs continuously across the whole session; the share-tab
-       prompt only appears the first time (browsers require this click) */
-    if (recordingActive) { begin(); return; }
-    setStatus('share this tab when prompted, to record the session …', 'busy');
-    startScreenRecording().then(function (ok) {
+      /* hide the live panel so the result stands alone (webcam keeps streaming;
+         RE-CAPTURE brings the feed back) */
+      show('camera-mode', false);
+      renderResult(payload);
+    }, function (e) {
       if (mode !== 'camera') { return; }
-      if (!ok) { setStatus('continuing without screen recording', ''); }
-      begin();
+      setStatus('detector error: ' + (e && e.message ? e.message : e), 'error');
+      show('cam-controls', true);
     });
   }
 
-  /**
-   * Paint the big "which side" banner over the live feed for the current pose
-   * (a directional arrow on left/right poses, just a label for the front pose).
-   * @param {Object} step  one entry from STEPS
-   */
-  function renderPoseBanner(step) {
-    var banner = el('pose-banner');
-    if (!banner) { return; }
-    var label = '<span class="pose-banner__label">' + step.label + '</span>';
-    var arrow = step.arrow
-      ? '<span class="pose-banner__arrow pose-banner__arrow--' + step.side +
-        '" aria-hidden="true">' + step.arrow + '</span>'
-      : '';
-    /* arrow leads on the left pose, trails on the right pose */
-    banner.innerHTML = (step.side === 'right') ? (label + arrow) : (arrow + label);
-    banner.hidden = false;
-  }
-
-  /**
-   * One step of the guided sequence: show the current pose prompt, run a 5s
-   * countdown over the live feed, then grab + analyse a frame. Falls through to
-   * finishSequence() once every pose in STEPS has been captured.
-   */
-  function runCycle() {
-    if (mode !== 'camera') { return; }
-    var step = sequence[stepIndex];
-    if (!step) { finishSequence(); return; }
-
-    /* clear any prior verdict and bring the live preview back */
+  /** RE-CAPTURE: drop the last verdict and return to the live preview. */
+  function recapture() {
     var result = el('result');
     if (result) { result.hidden = true; }
     document.body.className = '';
+    el('cam-state').textContent = '';
+    show('camera-mode', true);
     show('live-wrap', true);
-
-    renderPoseBanner(step);
-    el('cam-state').textContent = 'Pose ' + (stepIndex + 1) + ' of ' +
-      sequence.length + ' · ' + step.prompt;
-
-    var remaining = CYCLE_SECONDS;
-    var cd = el('countdown');
-    cd.textContent = String(remaining);
-    cd.hidden = false;
-    setStatus(step.prompt + ' — capturing in ' + remaining + 's …', '');
-
-    ticker = window.setInterval(function () {
-      remaining -= 1;
-      if (remaining > 0) {
-        cd.textContent = String(remaining);
-        setStatus(step.prompt + ' — capturing in ' + remaining + 's …', '');
-        return;
-      }
-      window.clearInterval(ticker);
-      ticker = null;
-      cd.hidden = true;
-      captureFrame();
-    }, 1000);
-  }
-
-  /**
-   * End the guided sequence: stop the loop, leave the final verdict on screen
-   * and bring back the START controls so the user can run the three poses again.
-   */
-  function finishSequence() {
-    if (mode !== 'camera') { return; }
-    clearTimers();
-    el('countdown').hidden = true;
-    el('pose-banner').hidden = true;
-    var poses = sequence.length;
-    /* the first full run unlocks "CAPTURE AGAIN", which re-captures and
-       re-analyses only the straight pose */
-    didFullRun = true;
-    setStartLabel('CAPTURE&nbsp;AGAIN');
-    el('cam-state').textContent = poses > 1
-      ? 'Sequence complete · captured ' + poses + ' poses'
-      : 'Front photo captured';
     show('cam-controls', true);
-    show('cam-end', recordingActive);
-    setStatus('press CAPTURE AGAIN to retake the straight photo, or END to ' +
-      'download the recording', '');
-  }
-
-  /**
-   * Set the START / CAPTURE AGAIN button's label. Both states are green; only
-   * END is red, so the label is all that changes here.
-   * @param {string} text  button label (may contain entities)
-   */
-  function setStartLabel(text) {
-    var btn = el('cam-start');
-    if (btn) { btn.innerHTML = text; }
+    setStatus('press CAPTURE PHOTO to scan', '');
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   /**
@@ -913,177 +635,6 @@
     g.drawImage(live, 0, 0, w, h);
     g.restore();
     return canvas;
-  }
-
-  /**
-   * Grab a burst of `n` live frames spaced `gapMs` apart (the video keeps playing,
-   * so they are genuinely different frames over a ~1s window). Uses later() so a
-   * mode switch / clearTimers() aborts cleanly. Resolves to the canvas array.
-   * @returns {Promise<HTMLCanvasElement[]>}
-   */
-  function captureBurst(live, n, gapMs) {
-    return new Promise(function (resolve) {
-      var frames = [];
-      var grabNext = function () {
-        if (mode !== 'camera') { resolve(frames); return; }
-        frames.push(grabLiveFrame(live));
-        el('cam-state').textContent = 'captured · analysing frame ' +
-          frames.length + '/' + n + ' …';
-        if (frames.length >= n) { resolve(frames); return; }
-        later(grabNext, gapMs);
-      };
-      grabNext();
-    });
-  }
-
-  /**
-   * Run the CNN detector on each burst frame SEQUENTIALLY (ORT wasm is
-   * single-threaded; sequential runs bound cv.Mat memory). Frames that error are
-   * skipped. Resolves to [{payload, prob}] for the frames that succeeded.
-   * @returns {Promise<Array<{payload:Object, prob:number}>>}
-   */
-  function detectBurst(frames) {
-    var results = [];
-    var chain = Promise.resolve();
-    frames.forEach(function (canvas) {
-      chain = chain.then(function () {
-        if (mode !== 'camera') { return; }
-        return runDetect(canvas).then(function (payload) {
-          results.push({ payload: payload,
-            prob: (typeof payload.overall_score === 'number' ? payload.overall_score : 0) });
-        }, function () { /* skip a failed frame */ });
-      });
-    });
-    return chain.then(function () { return results; });
-  }
-
-  /** Median of a numeric array (average of the middle two when even). */
-  function median(arr) {
-    var s = arr.slice().sort(function (a, b) { return a - b; });
-    var mid = Math.floor(s.length / 2);
-    return (s.length % 2) ? s[mid] : (s[mid - 1] + s[mid]) / 2;
-  }
-
-  /**
-   * Aggregate burst results by MEDIAN probability. For an odd count the median is
-   * exactly the majority vote (median >= thr iff most frames >= thr) but also
-   * yields a calibrated meter value and shrugs off <=2 outlier frames (blur,
-   * blink, face-detect wobble). Corner-detector frames aggregate PER SIDE and the
-   * three-tier verdict is recomputed on the median pair; region-CNN frames
-   * aggregate the single region probability. Returns the representative frame's
-   * payload with its verdict/score/reason overwritten, or null if none.
-   */
-  function aggregateBurst(results) {
-    if (!results.length) { return null; }
-    var corner = results.filter(function (r) {
-      return r.payload.per_corner && r.payload.per_corner.L &&
-        typeof r.payload.per_corner.L.cam_prob === 'number';
-    });
-    /* corner path on a majority of frames: median per side + tier verdict */
-    if (corner.length >= results.length / 2 && window.DET.corners &&
-        window.DET.corners.ready()) {
-      var mL = median(corner.map(function (r) { return r.payload.per_corner.L.cam_prob; }));
-      var mR = median(corner.map(function (r) { return r.payload.per_corner.R.cam_prob; }));
-      var v = window.DET.corners.tier(mL, mR);
-      var repC = corner[Math.floor(corner.length / 2)].payload;
-      var r3 = function (p) { return Math.round(p * 1000) / 1000; };
-      repC.per_corner = { L: { cam_prob: r3(mL) }, R: { cam_prob: r3(mR) } };
-      repC.prob_left = r3(mL); repC.prob_right = r3(mR);
-      repC.overall_score = r3(Math.max(mL, mR));
-      repC.verdict = (v === 'YES') ? 'META' : (v === 'MAYBE' ? 'MAYBE' : 'NORMAL');
-      repC.tier = v;
-      repC.reason = {
-        YES: 'camera module recognised in BOTH corners',
-        MAYBE: 'a camera module may be present (one corner) — check manually',
-        NO: 'no camera module found'
-      }[v] + ' — median of ' + corner.length + '/' + BURST_FRAMES +
-        ' frames (L=' + r3(mL) + ' R=' + r3(mR) + ')';
-      return repC;
-    }
-    /* region-CNN path: median of the single probability */
-    var sorted = results.slice().sort(function (a, b) { return a.prob - b.prob; });
-    var mid = Math.floor(sorted.length / 2);
-    var medProb = (sorted.length % 2)
-      ? sorted[mid].prob
-      : (sorted[mid - 1].prob + sorted[mid].prob) / 2;
-    var rep = sorted[mid].payload;              // a real frame near the median (for overlay)
-    var thr = (typeof rep.threshold === 'number') ? rep.threshold : 0.5;
-    var isMeta = medProb >= thr;
-    var pctP = Math.round(medProb * 100) / 100;
-    rep.overall_score = medProb;
-    rep.verdict = isMeta ? 'META' : 'NORMAL';
-    rep.reason = (isMeta ? 'camera glasses recognised' : 'no camera module found') +
-      ' — median P=' + pctP + ' over ' + results.length + '/' + BURST_FRAMES + ' frames';
-    return rep;
-  }
-
-  /**
-   * Grab the current live frame(s), keep them in `captures`, and — only for poses
-   * flagged analyze:true — run the detector. Left/right side frames are captured
-   * but NOT analysed (kept for later use). The front pose gets a verdict: with the
-   * CNN it is a 5-frame burst reduced to the median probability (kills flickery
-   * single-frame false positives); the legacy HOG path stays single-frame.
-   */
-  function captureFrame() {
-    if (mode !== 'camera') { return; }
-    var step = sequence[stepIndex];
-    var live = el('live');
-    el('pose-banner').hidden = true;
-
-    /* advance to the next pose after `holdMs`, or stop after the last one */
-    var advance = function (holdMs) {
-      if (mode !== 'camera') { return; }
-      stepIndex += 1;
-      later(stepIndex < sequence.length ? runCycle : finishSequence, holdMs);
-    };
-
-    if (!step.analyze) {
-      /* left / right side: capture one frame, no detection */
-      captures.push({ key: step.key, dataUrl: grabLiveFrame(live).toDataURL('image/png') });
-      el('cam-state').textContent = step.label + ' captured ✓';
-      setStatus(step.label + ' captured — hold on …', '');
-      advance(RESULT_HOLD_MS);
-      return;
-    }
-
-    /* front pose. Corner/region CNN available -> 5-frame burst + median vote. */
-    if (cornersReady || cnnReady) {
-      el('cam-state').textContent = 'captured · analysing …';
-      setStatus('analysing a burst of frames …', 'busy');
-      captureBurst(live, BURST_FRAMES, BURST_GAP_MS).then(function (frames) {
-        if (mode !== 'camera' || !frames.length) { return advance(RESULT_HOLD_MS); }
-        /* keep every burst frame for later use / hard-example collection */
-        frames.forEach(function (c, i) {
-          captures.push({ key: step.key + '-b' + (i + 1),
-            dataUrl: c.toDataURL('image/png') });
-        });
-        detectBurst(frames).then(function (results) {
-          if (mode !== 'camera') { return; }
-          var payload = aggregateBurst(results);
-          if (!payload) {
-            setStatus('all burst frames failed to analyse — retrying next cycle', 'error');
-            advance(RESULT_HOLD_MS);
-            return;
-          }
-          renderResult(payload);
-          advance(RESULT_HOLD_MS);
-        });
-      });
-      return;
-    }
-
-    /* legacy HOG fallback: single-frame verdict (payloads carry no overall_score) */
-    var canvas = grabLiveFrame(live);
-    captures.push({ key: step.key, dataUrl: canvas.toDataURL('image/png') });
-    el('cam-state').textContent = 'captured · analysing …';
-    if (canvas.toBlob) {
-      canvas.toBlob(function (blob) {
-        if (mode !== 'camera') { return; }
-        scan(blob, function () { advance(RESULT_HOLD_MS); });
-      }, 'image/png');
-    } else {
-      advance(RESULT_HOLD_MS);  // ancient browser without toBlob
-    }
   }
 
   /** Switch input mode and (de)activate the camera accordingly. */
@@ -1158,8 +709,10 @@
       });
     }
 
+    /* RE-CAPTURE (camera) returns to the live feed; SCAN ANOTHER (upload) resets */
     if (again) {
       again.addEventListener('click', function () {
+        if (mode === 'camera') { recapture(); return; }
         var result = el('result');
         if (result) { result.hidden = true; }
         document.body.className = '';
@@ -1169,31 +722,33 @@
       });
     }
 
+    /* DOWNLOAD saves both the plain captured/uploaded photo and the annotated
+       result image, staggered so the browser doesn't collapse them into one */
+    var download = el('download');
+    if (download) {
+      download.addEventListener('click', function () {
+        var n = 0;
+        if (lastPhoto) { triggerDownload(lastPhoto, 'capture-photo.png'); n += 1; }
+        if (lastOverlay) {
+          window.setTimeout(function () {
+            triggerDownload(lastOverlay, 'capture-result.png');
+          }, 350);
+          n += 1;
+        }
+        setStatus(n ? 'downloading ' + n + ' file' + (n === 1 ? '' : 's') + ' …'
+                    : 'nothing to download yet', n ? '' : 'error');
+      });
+    }
+
     /* mode tabs */
     var tabCam = el('tab-camera');
     var tabUp = el('tab-upload');
     if (tabCam) { tabCam.addEventListener('click', function () { setMode('camera'); }); }
     if (tabUp) { tabUp.addEventListener('click', function () { setMode('upload'); }); }
 
-    /* START TEST button kicks off the live capture loop */
+    /* CAPTURE PHOTO grabs one frame and analyses it */
     var camStart = el('cam-start');
-    if (camStart) { camStart.addEventListener('click', startLoop); }
-
-    /* END stops the screen recording and downloads it, then resets for a
-       fresh session */
-    var camEnd = el('cam-end');
-    if (camEnd) {
-      camEnd.addEventListener('click', function () {
-        clearTimers();
-        var nPhotos = downloadCaptures();   // all captured pose photos
-        stopRecordingAndDownload();         // plus the screen recording
-        setStatus('downloading ' + nPhotos + ' photo' +
-          (nPhotos === 1 ? '' : 's') + ' + the screen recording …', '');
-        didFullRun = false;
-        setStartLabel('START&nbsp;TEST');
-        show('cam-end', false);
-      });
-    }
+    if (camStart) { camStart.addEventListener('click', captureAndAnalyze); }
 
     /* camera is the default mode on load */
     enterCamera();

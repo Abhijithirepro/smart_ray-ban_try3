@@ -12,9 +12,6 @@
 <body>
   <div class="grain" aria-hidden="true"></div>
 
-  <!-- one-time spoken instructions, played when the live page opens -->
-  <audio id="intro-audio" preload="auto" src="static/intro-audio.mp3"></audio>
-
   <header class="masthead">
     <div class="masthead__mark">
       <span class="dot" aria-hidden="true"></span>
@@ -29,29 +26,20 @@
     <section class="intro">
       <h1 class="intro__title">Is there a<br /><em>camera</em> in the frame?</h1>
       <p class="intro__lede">
-        Drop a clean, roughly front-on photo of a pair of glasses. The scanner
-        hunts the top-outer corners for a Ray-Ban&nbsp;Meta camera module —
-        a small dark glassy bezel with a central glint. Runs entirely in your
-        browser; nothing is uploaded.
+        Point the camera at a pair of glasses (or upload a photo) and capture.
+        The scanner hunts the top-outer corners for a Ray-Ban&nbsp;Meta camera
+        module — a small dark glassy bezel with a central glint. Runs entirely
+        in your browser; nothing is uploaded.
       </p>
-
-      <!-- HOW-IT-WORKS CLIP — sits here, away from the live camera scene -->
-      <figure id="intro-clip" class="intro__clip" hidden>
-        <video id="intro" class="intro__clip-video" muted playsinline loop
-               preload="auto" src="make_and_give.mp4"></video>
-        <figcaption class="intro__clip-cap">
-          HOW&nbsp;IT&nbsp;WORKS&nbsp;· the one thing you keep missing
-        </figcaption>
-      </figure>
     </section>
 
     <section class="console" aria-label="scanner">
       <!-- MODE TOGGLE -->
       <div class="mode-tabs" role="tablist" aria-label="input mode">
         <button id="tab-camera" class="mode-tab is-active" type="button"
-                role="tab" aria-selected="true">LIVE&nbsp;CAMERA</button>
+                role="tab" aria-selected="true">LIVE</button>
         <button id="tab-upload" class="mode-tab" type="button"
-                role="tab" aria-selected="false">UPLOAD&nbsp;IMAGE</button>
+                role="tab" aria-selected="false">IMAGE&nbsp;UPLOAD</button>
       </div>
 
       <!-- CAMERA MODE (default) -->
@@ -63,17 +51,15 @@
 
           <div id="live-wrap" class="camera__live" hidden>
             <video id="live" class="camera__video" autoplay muted playsinline></video>
-            <div id="pose-banner" class="pose-banner" aria-live="polite" hidden></div>
-            <div id="countdown" class="countdown" aria-hidden="true"></div>
             <div id="cam-state" class="camera__state"></div>
           </div>
         </div>
 
         <div id="cam-controls" class="camera__controls" hidden>
-          <p class="camera__prompt">START asks to share this tab so the session is screen-recorded, then guides you through three poses — left side, right side, then straight on — with a 5-second countdown before each capture, and stops on its own. Press END to download the recording.</p>
+          <p class="camera__prompt">Hold the glasses in view, then capture.</p>
           <div class="camera__buttons">
             <button id="cam-start" class="again camera__start" type="button">
-              START&nbsp;TEST
+              CAPTURE&nbsp;PHOTO
             </button>
           </div>
         </div>
@@ -138,19 +124,15 @@
             <p id="why-text" class="why__text"></p>
           </div>
 
-          <button id="again" class="again" type="button">SCAN ANOTHER</button>
+          <div class="result__actions">
+            <button id="again" class="again" type="button">SCAN ANOTHER</button>
+            <button id="download" class="again again--ghost" type="button">DOWNLOAD</button>
+          </div>
         </div>
       </div>
 
       <div id="status" class="status" role="status" aria-live="polite"></div>
     </section>
-
-    <!-- END sits on its own at the foot of the page, away from START -->
-    <div class="endbar">
-      <button id="cam-end" class="again again--ghost camera__end" type="button" hidden>
-        END&nbsp;·&nbsp;DOWNLOAD&nbsp;PHOTOS&nbsp;+&nbsp;VIDEO
-      </button>
-    </div>
   </main>
 
   <footer class="footer">
