@@ -1,5 +1,21 @@
 # Detector model comparison — YOLO11s vs YOLOX-Nano
 
+> **Update (2-class detector).** The shipped YOLOX-Nano was extended from one class
+> (`rayban_meta`) to **two** (`rayban_meta` + `glasses`) so the app can distinguish
+> *smart glasses* / *normal glasses* / *no glasses*. Normal-eyewear images
+> (`normal_glassess`, `normal_frame`, MeGlass, and the two `hirepro .../glasses*`
+> lighting folders) are now boxed as the `glasses` class via
+> `pipeline.region.locate_region`; only genuinely bare faces
+> (`hirepro .../without glasses`, `data/noglasses/`) remain zero-annotation
+> background. Browser decision: rayban ≥ t1 → SMART, else glasses ≥ t2 → NORMAL,
+> else NO GLASSES. The single-class numbers below are the original baseline; the
+> raw grid output is now `[1,8400,7]` (5 + 2 classes). See the plan file and
+> `eval_detector.py --sweep` (3-way confusion + held-out no-glasses accuracy) for
+> the retrained operating point.
+
+---
+
+
 Goal: replace the backend Ray-Ban Meta detector (YOLO11s, ~9.4M params, 18 MB) with a
 much smaller model that can eventually run in the browser. This documents a like-for-like
 comparison so the size/accuracy trade-off is explicit.

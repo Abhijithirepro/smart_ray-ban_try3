@@ -10,15 +10,20 @@ cause measured in the old system (see the plan / detection_accuracy.csv):
   B. Low resolution / 1-2 m distance -> Downscale + JPEG recompression + blur, which
      shrinks the camera module to a few pixels like the real 335px false-negatives.
   C. Clear / low-contrast frames & lighting -> brightness/contrast/gamma/hue + CLAHE.
-  FP-hardening -> synthetic specular GLARE pasted onto NEGATIVE images near the lens
-     corners, so "bright glint at a thick endpiece" is learned as NOT-a-module.
+  FP-hardening -> synthetic specular GLARE pasted onto non-Ray-Ban images near the
+     lens corners, so "bright glint at a thick endpiece" is learned as NOT-a-module.
+
+Two-class manifest: records carry "cls" ("rayban_meta" | "glasses" | null). Any
+record WITH a box goes through the bbox-aware pipeline (rayban x--per-image,
+glasses x--glasses-per-image); records with box=null are true no-glasses background
+and go through the box-less pipeline x--neg-per-image.
 
 Reads data/boxes/boxes.json (the reviewed manifest), augments the TRAIN split only
 (val stays 100% real for honest metrics), writes images under data/boxes/aug/ and a
 manifest data/boxes/aug.json. export_dataset.py merges boxes.json + aug.json.
 
     python tools/augment_positives.py                          # defaults
-    python tools/augment_positives.py --per-image 8 --neg-glare-frac 0.35
+    python tools/augment_positives.py --per-image 8 --glasses-per-image 2 --neg-per-image 3
 """
 from __future__ import annotations
 
@@ -164,15 +169,19 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--per-image", type=int, default=8,
-                    help="augmented variants per train positive (default 8)")
+                    help="augmented variants per train Ray-Ban positive (default 8)")
+    ap.add_argument("--glasses-per-image", type=int, default=2,
+                    help="augmented variants per train GLASSES-class image (default 2 "
+                         "— there are ~5x more of them than Ray-Ban positives, so a "
+                         "low multiplier keeps the class ratio near 1:2)")
     ap.add_argument("--occlusion-p", type=float, default=0.5,
-                    help="prob. of adding an edge-occlusion patch to a positive variant")
+                    help="prob. of adding an edge-occlusion patch to a boxed variant")
     ap.add_argument("--neg-per-image", type=int, default=3,
-                    help="augmented variants per train NEGATIVE (default 3) — "
-                         "rebalances the class ratio so normal glasses aren't "
-                         "outnumbered by the x8 positives (fixes false positives)")
+                    help="augmented variants per train NO-GLASSES background image "
+                         "(default 3) — grows the thin bare-face set")
     ap.add_argument("--neg-glare-frac", type=float, default=0.3,
-                    help="fraction of train negatives to ALSO emit a glare-hardened copy of")
+                    help="fraction of train non-Ray-Ban images to ALSO emit a "
+                         "glare-hardened copy of")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args(argv)
 
@@ -185,7 +194,9 @@ def main(argv=None):
     os.makedirs(AUG_IMG_DIR, exist_ok=True)
 
     aug_records = []
-    n_pos_in = n_pos_out = n_neg_out = n_drop = 0
+    n_in = {"rayban_meta": 0, "glasses": 0, None: 0}
+    n_out = {"rayban_meta": 0, "glasses": 0, None: 0}
+    n_drop = 0
 
     for r in manifest["images"]:
         if r["split"] != "train":
@@ -196,13 +207,32 @@ def main(argv=None):
             continue
         H, W = img.shape[:2]
         base = os.path.splitext(os.path.basename(r["image"]))[0]
+        # old manifests have no "cls": boxed records were all rayban positives
+        rcls = r.get("cls", "rayban_meta" if r.get("box") else None)
 
-        if r["label"] == 1 and r.get("box"):
-            n_pos_in += 1
+        def _emit(aimg, box, suffix, method):
+            name = f"{base}__{suffix}.jpg"
+            rel = os.path.join("aug", name)
+            cv2.imwrite(os.path.join(BOXES_DIR, rel), aimg,
+                        [cv2.IMWRITE_JPEG_QUALITY, 90])
+            ah, aw = aimg.shape[:2]
+            aug_records.append({
+                "image": rel.replace("\\", "/"), "w": aw, "h": ah,
+                "label": r["label"], "cls": rcls, "split": "train",
+                "group": r["group"], "source": r["source"], "method": method,
+                "box": [int(round(v)) for v in box] if box else None,
+                "augmented": True, "parent": r["image"],
+            })
+            n_out[rcls] += 1
+
+        if r.get("box"):
+            # boxed classes (rayban_meta x--per-image, glasses x--glasses-per-image)
+            n_in[rcls] += 1
+            per = args.per_image if rcls == "rayban_meta" else args.glasses_per_image
             x, y, w, h = r["box"]
             voc = [[x, y, x + w, y + h]]
-            for k in range(args.per_image):
-                res = tf(image=img, bboxes=voc, cls=[0])
+            for k in range(per):
+                res = tf(image=img, bboxes=voc, cls=[rcls])
                 if not len(res["bboxes"]):
                     n_drop += 1
                     continue
@@ -211,49 +241,28 @@ def main(argv=None):
                 abox = [bx0, by0, bx1 - bx0, by1 - by0]
                 if rng.random() < args.occlusion_p:
                     aimg = add_edge_occlusion(aimg, abox, rng)
-                name = f"{base}__aug{k}.jpg"
-                rel = os.path.join("aug", name)
-                cv2.imwrite(os.path.join(BOXES_DIR, rel), aimg,
-                            [cv2.IMWRITE_JPEG_QUALITY, 90])
-                ah, aw = aimg.shape[:2]
-                aug_records.append({
-                    "image": rel.replace("\\", "/"), "w": aw, "h": ah,
-                    "label": 1, "split": "train", "group": r["group"],
-                    "source": r["source"], "method": "aug",
-                    "box": [int(round(v)) for v in abox], "augmented": True,
-                    "parent": r["image"],
-                })
-                n_pos_out += 1
+                _emit(aimg, abox, f"aug{k}", "aug")
+            # glare-hardened copy for a fraction of glasses images (glint != camera;
+            # photometric only, so the box is unchanged)
+            if (rcls == "glasses" and args.neg_glare_frac > 0
+                    and rng.random() < args.neg_glare_frac):
+                _emit(add_glare(img, rng), r["box"], "glare", "glare")
 
-        elif r["label"] == 0:
-            def _emit_neg(aimg, suffix, method):
-                nonlocal n_neg_out
-                name = f"{base}__{suffix}.jpg"
-                rel = os.path.join("aug", name)
-                cv2.imwrite(os.path.join(BOXES_DIR, rel), aimg,
-                            [cv2.IMWRITE_JPEG_QUALITY, 90])
-                ah, aw = aimg.shape[:2]
-                aug_records.append({
-                    "image": rel.replace("\\", "/"), "w": aw, "h": ah,
-                    "label": 0, "split": "train", "group": r["group"],
-                    "source": r["source"], "method": method,
-                    "box": None, "augmented": True, "parent": r["image"],
-                })
-                n_neg_out += 1
-
-            # N general augmented copies (rebalance the class ratio)
+        else:
+            # true no-glasses background: box-less pipeline
+            n_in[None] += 1
             for k in range(args.neg_per_image):
-                _emit_neg(neg_tf(image=img)["image"], f"negaug{k}", "negaug")
-            # plus glare-hardened copies on a fraction (glint != camera)
+                _emit(neg_tf(image=img)["image"], None, f"negaug{k}", "negaug")
             if args.neg_glare_frac > 0 and rng.random() < args.neg_glare_frac:
-                _emit_neg(add_glare(img, rng), "glare", "glare")
+                _emit(add_glare(img, rng), None, "glare", "glare")
 
     json.dump({"target_width": manifest.get("target_width"), "images": aug_records},
               open(AUG_MANIFEST, "w"), indent=1)
     print(f"wrote {AUG_MANIFEST}")
-    print(f"train positives in : {n_pos_in}")
-    print(f"positive variants  : {n_pos_out}  (dropped {n_drop} where box fell out)")
-    print(f"negative variants  : {n_neg_out}  (negaug x{args.neg_per_image} + glare)")
+    print(f"train in  : rayban={n_in['rayban_meta']} glasses={n_in['glasses']} "
+          f"noglasses={n_in[None]}")
+    print(f"variants  : rayban={n_out['rayban_meta']} glasses={n_out['glasses']} "
+          f"noglasses={n_out[None]}  (dropped {n_drop} where box fell out)")
     print(f"total augmented    : {len(aug_records)}")
     return 0
 

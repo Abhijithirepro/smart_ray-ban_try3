@@ -18,7 +18,7 @@
       MODULE&nbsp;SCAN
     </div>
     <div class="masthead__meta">
-      in-browser&nbsp;CV&nbsp;+&nbsp;learned&nbsp;corner&nbsp;verifier&nbsp;·&nbsp;threshold&nbsp;0.50
+      in-browser&nbsp;YOLOX-Nano&nbsp;detector&nbsp;·&nbsp;smart&nbsp;/&nbsp;normal&nbsp;/&nbsp;no&nbsp;glasses
     </div>
   </header>
 
@@ -26,10 +26,10 @@
     <section class="intro">
       <h1 class="intro__title">Is there a<br /><em>camera</em> in the frame?</h1>
       <p class="intro__lede">
-        Point the camera at a pair of glasses (or upload a photo) and capture.
-        The scanner hunts the top-outer corners for a Ray-Ban&nbsp;Meta camera
-        module — a small dark glassy bezel with a central glint. Runs entirely
-        in your browser; nothing is uploaded.
+        Point the camera at a face (or upload a photo) and capture. The scanner
+        tells apart <em>Ray-Ban&nbsp;Meta</em> smart glasses (camera in the frame),
+        ordinary glasses, and no glasses at all. Runs entirely in your browser;
+        nothing is uploaded.
       </p>
     </section>
 
@@ -98,7 +98,7 @@
 
           <div class="meter">
             <div class="meter__head">
-              <span>camera confidence · both corners must pass</span><span id="conf-val">0.00</span>
+              <span>smart-glasses (Ray-Ban Meta) confidence</span><span id="conf-val">0.00</span>
             </div>
             <div class="meter__track">
               <div id="conf-fill" class="meter__fill"></div>
@@ -136,8 +136,8 @@
   </main>
 
   <footer class="footer">
-    <span>in-browser CV · camera-module CNN per top-outer corner</span>
-    <span>BOTH corners = smart glasses · one corner = maybe, check</span>
+    <span>in-browser YOLOX-Nano · two-class glasses detector</span>
+    <span>Ray-Ban Meta box = smart · plain-glasses box = normal · neither = no glasses</span>
   </footer>
 
   <!-- OpenCV.js (self-contained, embedded wasm); sets window.cv asynchronously -->

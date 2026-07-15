@@ -1,15 +1,18 @@
 #!/usr/bin/env python3
-"""Run the trained Ray-Ban Meta detector on an image (or folder).
+"""Run the trained glasses detector on an image (or folder).
 
-    python infer.py IMAGE [--weights runs/rayban_yolo/weights/best.pt] [--conf 0.4] [--save]
+    python infer.py IMAGE [--weights runs/rayban_yolox/best_ckpt.pth] [--conf 0.4] [--save]
     python infer.py normal_glassess/ --save          # batch a whole folder
 
-Prints one line per image:  RAY-BAN META (0.87)  path      when a box >= conf,
-                            NORMAL / NONE          path      otherwise.
-With --save, writes an annotated copy (box + score) to detected_image_draw/.
+Two-class model (rayban_meta + glasses) -> three-way verdict per image:
+    RAY-BAN META (0.87)    path     rayban box >= --conf
+    NORMAL GLASSES (0.71)  path     else glasses box >= --conf-glasses
+    NO GLASSES             path     else
+With --save, writes an annotated copy (boxes + scores) to detected_image_draw/.
 
-Works with YOLO weights (a .pt from Ultralytics). RF-DETR weights are also supported
-if the rfdetr package is installed and --weights points at an RF-DETR checkpoint dir.
+Works with YOLOX checkpoints (.pth under a yolox run dir), Ultralytics YOLO (.pt),
+and RF-DETR if installed. Detectors return (x1, y1, x2, y2, score, cls) with
+cls 0 = rayban_meta, 1 = glasses.
 """
 from __future__ import annotations
 
@@ -35,13 +38,19 @@ def _iter_images(target):
         yield target
 
 
+CLS_NAMES = ("rayban_meta", "glasses")
+CLS_COLORS = ((0, 220, 60), (0, 165, 255))   # rayban green, glasses orange
+
+
 def _annotate(img, boxes, out_path):
-    for (x1, y1, x2, y2, score) in boxes:
-        cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), (0, 220, 60), 3)
-        label = f"rayban_meta {score:.2f}"
+    for (x1, y1, x2, y2, score, cls) in boxes:
+        c = int(cls) if int(cls) < len(CLS_NAMES) else 0
+        color = CLS_COLORS[c]
+        cv2.rectangle(img, (int(x1), int(y1)), (int(x2), int(y2)), color, 3)
+        label = f"{CLS_NAMES[c]} {score:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.7, 2)
         cv2.rectangle(img, (int(x1), int(y1) - th - 8),
-                      (int(x1) + tw + 6, int(y1)), (0, 220, 60), -1)
+                      (int(x1) + tw + 6, int(y1)), color, -1)
         cv2.putText(img, label, (int(x1) + 3, int(y1) - 5),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 40, 10), 2)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
@@ -59,7 +68,7 @@ class YoloDetector:
         out = []
         for b in r.boxes:
             x1, y1, x2, y2 = b.xyxy[0].tolist()
-            out.append((x1, y1, x2, y2, float(b.conf[0])))
+            out.append((x1, y1, x2, y2, float(b.conf[0]), int(b.cls[0])))
         return out
 
 
@@ -76,8 +85,11 @@ class RFDetrDetector:
         out = []
         xy = np.asarray(det.xyxy) if det.xyxy is not None else []
         cf = np.asarray(det.confidence) if det.confidence is not None else []
-        for (x1, y1, x2, y2), s in zip(xy, cf):
-            out.append((float(x1), float(y1), float(x2), float(y2), float(s)))
+        cid = np.asarray(det.class_id) if getattr(det, "class_id", None) is not None \
+            else np.zeros(len(cf))
+        for (x1, y1, x2, y2), s, c in zip(xy, cf, cid):
+            out.append((float(x1), float(y1), float(x2), float(y2),
+                        float(s), int(c)))
         return out
 
 
@@ -103,7 +115,7 @@ class YoloxDetector:
         self.device = device if device in ("cuda", "mps") else "cpu"
         self.model.to(self.device)
         self.test_size = exp.test_size       # (640, 640)
-        self.num_classes = exp.num_classes   # 1
+        self.num_classes = exp.num_classes   # 2 (rayban_meta, glasses)
         self.nmsthre = exp.nmsthre           # 0.65
 
     def detect(self, path, conf):
@@ -116,15 +128,17 @@ class YoloxDetector:
         tensor = self.torch.from_numpy(tensor).unsqueeze(0).float().to(self.device)
         with self.torch.no_grad():
             out = self.model(tensor)                    # head decodes in eval mode
+            # per-class NMS: a glasses box must not suppress an overlapping
+            # rayban box (they cover the same object by design)
             out = postprocess(out, self.num_classes, conf, self.nmsthre,
-                              class_agnostic=True)[0]
+                              class_agnostic=False)[0]
         boxes = []
         if out is not None:
             for row in out.cpu().numpy():
-                x1, y1, x2, y2, obj, cls_conf = row[:6]
+                x1, y1, x2, y2, obj, cls_conf, cls = row[:7]
                 boxes.append((float(x1 / ratio), float(y1 / ratio),
                               float(x2 / ratio), float(y2 / ratio),
-                              float(obj * cls_conf)))
+                              float(obj * cls_conf), int(cls)))
         return boxes
 
 
@@ -165,7 +179,10 @@ def main(argv=None):
     ap.add_argument("target", help="image file or folder")
     ap.add_argument("--weights", default=_DEFAULT_YOLO)
     ap.add_argument("--conf", type=float, default=0.4,
-                    help="min box confidence to call RAY-BAN META")
+                    help="min rayban box confidence to call RAY-BAN META")
+    ap.add_argument("--conf-glasses", type=float, default=0.35,
+                    help="min glasses box confidence to call NORMAL GLASSES "
+                         "(below both thresholds -> NO GLASSES)")
     ap.add_argument("--save", action="store_true",
                     help="write annotated images to detected_image_draw/")
     ap.add_argument("--device", default=None)
@@ -177,24 +194,31 @@ def main(argv=None):
     device = args.device or pick_device()
     det = build_detector(args.weights, device)
 
-    n_meta = n_total = 0
+    floor = min(args.conf, args.conf_glasses)
+    n_meta = n_normal = n_none = n_total = 0
     for path in _iter_images(args.target):
         n_total += 1
-        boxes = det.detect(path, args.conf)
+        boxes = det.detect(path, floor)
         boxes.sort(key=lambda b: -b[4])
-        if boxes:
-            top = boxes[0][4]
-            print(f"RAY-BAN META ({top:.2f})   {path}")
+        rb = max((b[4] for b in boxes if b[5] == 0), default=0.0)
+        gl = max((b[4] for b in boxes if b[5] == 1), default=0.0)
+        if rb >= args.conf:
+            print(f"RAY-BAN META ({rb:.2f})     {path}")
             n_meta += 1
+        elif gl >= args.conf_glasses:
+            print(f"NORMAL GLASSES ({gl:.2f})   {path}")
+            n_normal += 1
         else:
-            print(f"NORMAL / NONE       {path}")
+            print(f"NO GLASSES          {path}")
+            n_none += 1
         if args.save:
             img = cv2.imread(path)
             if img is not None:
                 out_path = os.path.join(OUT_DIR, os.path.basename(path))
                 _annotate(img, boxes, out_path)
     if n_total > 1:
-        print(f"\n{n_meta}/{n_total} flagged RAY-BAN META")
+        print(f"\n{n_meta}/{n_total} RAY-BAN META, {n_normal} NORMAL GLASSES, "
+              f"{n_none} NO GLASSES")
     return 0
 
 

@@ -264,6 +264,7 @@
     var result = el('result');
     var isMeta = payload.verdict === 'META';
     var isMaybe = payload.verdict === 'MAYBE';
+    var isNoGlasses = payload.verdict === 'NOGLASSES';
     var threshold = payload.threshold || 0.5;
     var cp = camProbs(payload);
     /* Corner/HOG path: the meter shows the corner the verdict hinges on — the
@@ -275,11 +276,13 @@
     el('overlay').src = payload.overlay || '';
     lastOverlay = payload.overlay || null;   // kept for the DOWNLOAD button
     el('verdict-text').textContent = isMeta ? 'SMART GLASSES'
-      : (isMaybe ? 'MAYBE — CHECK' : 'NORMAL GLASSES');
+      : (isMaybe ? 'MAYBE — CHECK'
+        : (isNoGlasses ? 'NO GLASSES' : 'NORMAL GLASSES'));
     el('verdict-reason').textContent = isMeta
       ? 'camera recognised in both corners'
       : (isMaybe ? 'a camera module may be present — one corner fired'
-                 : 'not smart glasses');
+        : (isNoGlasses ? 'no eyewear detected on the face'
+                       : 'not smart glasses'));
 
     el('conf-val').textContent = fmt(conf);
     renderCorner('score-l', 'state-l', 'corner-l', cp.l, threshold, cp.has,
@@ -295,7 +298,8 @@
       again.textContent = (mode === 'camera') ? 'RE-CAPTURE' : 'SCAN ANOTHER';
     }
 
-    var cls = isMeta ? 'is-meta' : (isMaybe ? 'is-maybe' : 'is-normal');
+    var cls = isMeta ? 'is-meta'
+      : (isMaybe ? 'is-maybe' : (isNoGlasses ? 'is-noglasses' : 'is-normal'));
     result.className = 'result ' + cls;
     result.hidden = false;
     document.body.className = 'has-result';
@@ -468,9 +472,11 @@
     /* header banner */
     var isMeta = payload.verdict === 'META';
     var isMaybe = payload.verdict === 'MAYBE';
+    var isNoG = payload.verdict === 'NOGLASSES';
     ctx.fillStyle = 'rgba(0,0,0,0.78)';
     ctx.fillRect(0, 0, W, 28);
-    ctx.fillStyle = isMeta ? '#ff4d4d' : (isMaybe ? '#ffb03f' : '#27e08a');
+    ctx.fillStyle = isMeta ? '#ff4d4d'
+      : (isMaybe ? '#ffb03f' : (isNoG ? '#9fb4c7' : '#27e08a'));
     ctx.font = '700 16px "Space Mono", monospace';
     var pL = payload.prob_left, pR = payload.prob_right;
     var banner;

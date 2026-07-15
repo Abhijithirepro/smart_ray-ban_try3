@@ -31,6 +31,8 @@ SOURCES = [
     ("hirepro_images_normal/8-july", 0, "real"),  # HirePro normal/no-glasses negatives
     ("data/rayban", 1, "real"),      # drop-in: new Ray-Ban images
     ("data/normal", 0, "real"),      # drop-in: new normal images
+    ("data/noglasses", 0, "real"),   # drop-in: bare faces (NO glasses) — detector
+                                     # background; see tools/bootstrap_boxes._det_class
 ]
 EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp")
 

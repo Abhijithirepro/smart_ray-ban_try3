@@ -13,8 +13,9 @@ augmentations (data/boxes/aug.json) and writes one of two on-disk layouts:
                                     annotations/instances_{train2017,val2017}.json
 
 Augmentations only exist for the train split, so validation stays 100% real.
-Negatives are written as background: COCO images with zero annotations / empty YOLO
-.txt files. Single class: rayban_meta.
+No-glasses images are written as background: COCO images with zero annotations /
+empty YOLO .txt files. Two classes: rayban_meta (id 1) + glasses (id 2); records
+without a "cls" field (old manifests) default to rayban_meta.
 
     python tools/export_dataset.py --format coco
     python tools/export_dataset.py --format yolo
@@ -30,7 +31,15 @@ import sys
 
 _REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BOXES_DIR = os.path.join(_REPO, "data", "boxes")
-CLASS_NAME = "rayban_meta"
+CATEGORIES = [{"id": 1, "name": "rayban_meta", "supercategory": "none"},
+              {"id": 2, "name": "glasses", "supercategory": "none"}]
+CAT_ID = {c["name"]: c["id"] for c in CATEGORIES}
+
+
+def _cat_id(rec):
+    """COCO category id for a boxed record; old manifests lack "cls" (their boxed
+    records were all Ray-Ban positives)."""
+    return CAT_ID[rec.get("cls") or "rayban_meta"]
 
 
 def load_records():
@@ -49,8 +58,7 @@ def export_coco(records, out_dir):
     split_map = {"train": "train", "val": "valid"}
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
-    coco = {s: {"images": [], "annotations": [], "categories":
-                [{"id": 1, "name": CLASS_NAME, "supercategory": "none"}]}
+    coco = {s: {"images": [], "annotations": [], "categories": CATEGORIES}
             for s in ("train", "valid", "test")}
     img_id = {s: 0 for s in coco}
     ann_id = {s: 0 for s in coco}
@@ -72,7 +80,7 @@ def export_coco(records, out_dir):
             x, y, w, h = rec["box"]
             ann_id[split] += 1
             coco[split]["annotations"].append(
-                {"id": ann_id[split], "image_id": iid, "category_id": 1,
+                {"id": ann_id[split], "image_id": iid, "category_id": _cat_id(rec),
                  "bbox": [x, y, w, h], "area": int(w * h), "iscrowd": 0,
                  "segmentation": []})
 
@@ -95,14 +103,14 @@ def export_coco(records, out_dir):
 def export_yolox(records, out_dir):
     """YOLOX COCODataset layout: images under data_dir/{train2017,val2017}/ and
     annotations under data_dir/annotations/instances_{train2017,val2017}.json.
-    Negatives are kept as zero-annotation images (YOLOX trains them as background)."""
+    No-glasses images are kept as zero-annotation images (YOLOX trains them as
+    background)."""
     split_map = {"train": "train2017", "val": "val2017"}
     if os.path.isdir(out_dir):
         shutil.rmtree(out_dir)
     ann_dir = os.path.join(out_dir, "annotations")
     os.makedirs(ann_dir, exist_ok=True)
-    coco = {s: {"images": [], "annotations": [], "categories":
-                [{"id": 1, "name": CLASS_NAME, "supercategory": "none"}]}
+    coco = {s: {"images": [], "annotations": [], "categories": CATEGORIES}
             for s in ("train2017", "val2017")}
     img_id = {s: 0 for s in coco}
     ann_id = {s: 0 for s in coco}
@@ -126,7 +134,7 @@ def export_yolox(records, out_dir):
             x, y, w, h = rec["box"]
             ann_id[split] += 1
             coco[split]["annotations"].append(
-                {"id": ann_id[split], "image_id": iid, "category_id": 1,
+                {"id": ann_id[split], "image_id": iid, "category_id": _cat_id(rec),
                  "bbox": [x, y, w, h], "area": int(w * h), "iscrowd": 0,
                  "segmentation": []})
 
@@ -163,16 +171,17 @@ def export_yolo(records, out_dir):
             W, H = rec["w"], rec["h"]
             cx, cy = (x + w / 2) / W, (y + h / 2) / H
             nw, nh = w / W, h / H
-            lines.append(f"0 {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
+            lines.append(f"{_cat_id(rec) - 1} {cx:.6f} {cy:.6f} {nw:.6f} {nh:.6f}")
             counts[split][1] += 1
         with open(os.path.join(out_dir, "labels", split, stem + ".txt"), "w") as fh:
             fh.write("\n".join(lines))
         counts[split][0] += 1
 
+    names = "\n".join(f"  {c['id'] - 1}: {c['name']}" for c in CATEGORIES)
     yaml = (f"path: {out_dir}\n"
             f"train: images/train\n"
             f"val: images/val\n"
-            f"names:\n  0: {CLASS_NAME}\n")
+            f"names:\n{names}\n")
     with open(os.path.join(out_dir, "rayban.yaml"), "w") as fh:
         fh.write(yaml)
     for s in ("train", "val"):

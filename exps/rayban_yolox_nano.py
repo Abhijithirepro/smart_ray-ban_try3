@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
-"""YOLOX-Nano experiment for the single-class Ray-Ban Meta glasses detector.
+"""YOLOX-Nano experiment for the two-class glasses detector.
 
 Trains a ~0.9M-param nano model on the exported COCO dataset at
 data/rayban_yolox_coco/ (built by `tools/export_dataset.py --format yolox`).
-The one class is `rayban_meta`; normal / no-glasses images are background
-negatives (zero-annotation COCO images).
+Classes: `rayban_meta` (id 1) + `glasses` (id 2, generic eyewear); true
+NO-GLASSES images are background negatives (zero-annotation COCO images), so
+"neither class detected" means a bare face.
 
 Run (from the repo root):
     .venv-train/bin/python third_party/YOLOX/tools/train.py \
@@ -31,7 +32,7 @@ class Exp(BaseExp):
         self.output_dir = os.path.join(_REPO, "runs")
 
         # --- nano architecture (depth/width + depthwise convs) ---
-        self.num_classes = 1
+        self.num_classes = 2          # rayban_meta, glasses
         self.depth = 0.33
         self.width = 0.25
 

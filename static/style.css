@@ -14,6 +14,7 @@
   --alert:      #ff4326;   /* META — camera detected */
   --safe:       #2fe0a8;   /* NORMAL — no module */
   --warn:       #ffb03f;   /* MAYBE — one corner fired, check manually */
+  --muted:      #9fb4c7;   /* NO GLASSES — bare face, no eyewear */
   --grid:       rgba(198, 242, 78, 0.045);
   --shadow:     0 30px 80px rgba(0,0,0,.55);
   --mono:       'Space Mono', ui-monospace, monospace;
@@ -232,6 +233,7 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .result.is-meta .verdict__text { color: var(--alert); text-shadow: 0 0 26px rgba(255,67,38,.4); }
 .result.is-normal .verdict__text { color: var(--safe); text-shadow: 0 0 26px rgba(47,224,168,.35); }
 .result.is-maybe .verdict__text { color: var(--warn); text-shadow: 0 0 26px rgba(255,176,63,.4); }
+.result.is-noglasses .verdict__text { color: var(--muted); text-shadow: 0 0 26px rgba(159,180,199,.3); }
 
 /* meter */
 .meter__head { display: flex; justify-content: space-between; font-size: 11px; letter-spacing: .18em; color: var(--fog); margin-bottom: 8px; }
@@ -242,6 +244,7 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .result.is-meta .meter__fill { background: var(--alert); }
 .result.is-normal .meter__fill { background: var(--safe); }
 .result.is-maybe .meter__fill { background: var(--warn); }
+.result.is-noglasses .meter__fill { background: var(--muted); }
 .meter__mark { position: absolute; top: -3px; bottom: -3px; width: 2px; background: var(--chalk); opacity: .55; }
 
 /* corners — each shows the learned P(camera) and a pass/fail state */
@@ -269,6 +272,7 @@ body.has-result .stage { grid-template-columns: 1fr; }
 .result.is-meta .why__text { border-left-color: var(--alert); }
 .result.is-normal .why__text { border-left-color: var(--safe); }
 .result.is-maybe .why__text { border-left-color: var(--warn); }
+.result.is-noglasses .why__text { border-left-color: var(--muted); }
 
 /* again button */
 .again {

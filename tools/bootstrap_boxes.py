@@ -1,12 +1,19 @@
 #!/usr/bin/env python3
 """Auto-bootstrap whole-glasses bounding boxes for object-detection training.
 
-We have no hand-drawn boxes, only folder labels. Rather than annotate ~80 Ray-Ban
-images by hand, we reuse the repo's own localizer: pipeline.region.locate_region
-already returns ONE bbox around the whole glasses (frame + end pieces, camera
-inside) from a Haar face anchor. We run every labeled image through
-preprocess -> locate_region, save the canonical (target_width-wide) color image,
-and record the box.
+We have no hand-drawn boxes, only folder labels. Rather than annotate the images
+by hand, we reuse the repo's own localizer: pipeline.region.locate_region already
+returns ONE bbox around the whole glasses (frame + end pieces, camera inside) from
+a Haar face anchor. We run every labeled image through preprocess -> locate_region,
+save the image, and record the box.
+
+Two detector classes are emitted (record field "cls"):
+  * "rayban_meta" — Ray-Ban Meta positives (label 1)
+  * "glasses"     — normal eyewear (label 0 with glasses visibly present:
+                    normal_glassess, normal_frame, MeGlass, hirepro glasses folders)
+  * null          — true NO-GLASSES background (hirepro ".../without glasses" and
+                    the data/noglasses/** drop-in dir): saved with box=null so the
+                    detector learns "nothing to detect" only on genuinely bare faces.
 
 Output is a single source-of-truth manifest, data/boxes/boxes.json:
 
@@ -14,23 +21,32 @@ Output is a single source-of-truth manifest, data/boxes/boxes.json:
       "target_width": 1000,
       "images": [
         {"image": "images/train/pos/ray_ban_face__images (10).jpg",
-         "w": 1000, "h": 1779, "label": 1, "split": "train",
+         "w": 1000, "h": 1779, "label": 1, "cls": "rayban_meta", "split": "train",
          "group": "ray_ban_face:images (10)", "source": "ray_ban_face",
-         "method": "worn", "box": [x, y, w, h]},        # positives only
+         "method": "worn", "box": [x, y, w, h]},
         {"image": "images/train/neg/normal_glassess__foo.jpg",
-         "w": 1000, "h": 1333, "label": 0, "split": "train",
-         "group": "...", "source": "normal_glassess", "box": null},
+         "w": 1000, "h": 1333, "label": 0, "cls": "glasses", "split": "train",
+         "group": "...", "source": "normal_glassess", "method": "worn",
+         "box": [x, y, w, h]},
+        {"image": "images/train/neg/hirepro_images_normal_8-july__without_glasses_10.jpg",
+         "w": 1280, "h": 960, "label": 0, "cls": null, "split": "train",
+         "group": "...", "source": "hirepro_images_normal/8-july", "box": null},
         ...
       ]
     }
 
-Boxes are pixel [x, y, w, h] in the saved (canonical) image's coordinates, so no
-back-mapping is ever needed — the box always matches the image we ship to the
-trainer. Positives that the localizer can't box (tiny/failed) are dropped with a
-warning; run the review UI (tools/label_review) afterwards to fix mislocated boxes.
+Boxes are pixel [x, y, w, h] in the saved image's coordinates, so no back-mapping
+is ever needed — the box always matches the image we ship to the trainer. Boxed
+classes that the localizer can't box (tiny/failed — and for the "glasses" class the
+untrustworthy "center" fallback too) are DROPPED with a warning rather than kept as
+background, so a visible pair of glasses is never trained as "no glasses". Run the
+review UI (tools/label_review) afterwards to fix mislocated boxes.
+
+Human-reviewed Ray-Ban boxes in an existing boxes.json are preserved by default
+(--merge-existing); pass --no-merge-existing to re-localize everything.
 
     python tools/bootstrap_boxes.py                 # all sources
-    python tools/bootstrap_boxes.py --max-meglass 200 --overlays
+    python tools/bootstrap_boxes.py --max-meglass 200 --overlays --noglasses-val-frac 0.4
 
 The optional --overlays flag dumps annotated previews to data/boxes/overlays/ for a
 quick sanity check.
@@ -72,13 +88,30 @@ def _safe_name(source: str, rel_path: str) -> str:
 
 def _split_for_group(group: str, val_frac: float) -> str:
     """Deterministic group-aware split: hash the group so every image of one
-    physical glasses / person lands in the same split (no leakage)."""
+    physical glasses / person lands in the same split (no leakage). A larger
+    val_frac buckets a SUPERSET of a smaller one, so raising the fraction keeps
+    every previously-val group in val."""
     # stable, seed-free hash (avoids PYTHONHASHSEED variance)
     h = 0
     for ch in group:
         h = (h * 131 + ord(ch)) & 0xFFFFFFFF
     bucket = h % 100
     return "val" if bucket < int(val_frac * 100) else "train"
+
+
+def _det_class(source: str, label: int, rel_path: str):
+    """Detector class for one image: "rayban_meta", "glasses", or None (true
+    no-glasses background). The hirepro 8-july folder mixes both negative kinds —
+    its "without glasses" sub-folder is the only bare-face source besides the
+    data/noglasses drop-in dir."""
+    if label == 1:
+        return "rayban_meta"
+    norm = rel_path.replace("\\", "/")
+    if source == "hirepro_images_normal/8-july" and norm.startswith("without glasses"):
+        return None
+    if source.startswith("data/noglasses"):
+        return None
+    return "glasses"
 
 
 def main(argv=None):
@@ -95,6 +128,14 @@ def main(argv=None):
                     help="optional safety cap on saved image width (0 = keep ORIGINAL "
                          "resolution, the default). Localization always runs on an "
                          "internal canonical copy; the SAVED image + box are original.")
+    ap.add_argument("--noglasses-val-frac", type=float, default=0.4,
+                    help="val fraction for true NO-GLASSES background images (default "
+                         "0.4 — the set is small, hold more out for honest eval)")
+    ap.add_argument("--merge-existing", action=argparse.BooleanOptionalAction,
+                    default=True,
+                    help="keep boxes from the current boxes.json for Ray-Ban records "
+                         "(preserves label_review corrections) instead of re-running "
+                         "the localizer on them (default on)")
     args = ap.parse_args(argv)
 
     cfg = Config()
@@ -102,9 +143,19 @@ def main(argv=None):
     if args.overlays:
         os.makedirs(OVERLAY_DIR, exist_ok=True)
 
+    # Previously-saved (possibly human-reviewed) Ray-Ban boxes, keyed by the saved
+    # file's basename (stable across split changes).
+    prev_boxes = {}
+    prev_manifest = os.path.join(OUT_DIR, "boxes.json")
+    if args.merge_existing and os.path.isfile(prev_manifest):
+        for r in json.load(open(prev_manifest))["images"]:
+            if r.get("label") == 1 and r.get("box"):
+                prev_boxes[os.path.basename(r["image"])] = r
+
     records = []
-    stats = {"pos": 0, "neg": 0, "pos_dropped": 0, "meglass_skipped": 0,
-             "read_error": 0, "methods": {}}
+    stats = {"boxed": {"rayban_meta": 0, "glasses": 0}, "background": 0,
+             "dropped": {"rayban_meta": 0, "glasses": 0}, "merged": 0,
+             "meglass_skipped": 0, "read_error": 0, "methods": {}}
     meglass_kept = 0
 
     for folder, label, dist in SOURCES:
@@ -145,47 +196,65 @@ def main(argv=None):
             # map a canonical-space value to the saved image's pixels
             can_to_save = out_scale / fr.scale    # (1/fr.scale)=canonical->orig, then *out_scale
 
-            split = _split_for_group(group, args.val_frac)
+            rel_src = os.path.relpath(path, abs_folder)
+            det_cls = _det_class(source, label, rel_src)
+
+            frac = args.noglasses_val_frac if det_cls is None else args.val_frac
+            split = _split_for_group(group, frac)
             tag = "pos" if label == 1 else "neg"
-            name = _safe_name(source, os.path.relpath(path, abs_folder)) + ".jpg"
+            name = _safe_name(source, rel_src) + ".jpg"
             rel = os.path.join("images", split, tag, name)
             dst = os.path.join(OUT_DIR, rel)
             os.makedirs(os.path.dirname(dst), exist_ok=True)
 
             box = None
             method = None
-            if label == 1:
-                reg = region.locate_region(fr, cfg)
-                method = reg.method
+            if det_cls is not None:
+                prev = prev_boxes.get(name)
+                if (prev is not None and det_cls == "rayban_meta"
+                        and prev.get("w") == W and prev.get("h") == H):
+                    # keep the stored (possibly label_review-corrected) box
+                    box = list(prev["box"])
+                    method = prev.get("method") or "reviewed"
+                    stats["merged"] += 1
+                else:
+                    reg = region.locate_region(fr, cfg)
+                    method = reg.method
+                    if reg.w < 20 or reg.h < 20 or (det_cls == "glasses"
+                                                    and method == "center"):
+                        # never keep a visible pair of glasses as background
+                        print(f"  drop (no {det_cls} box, method={method}): {path}",
+                              file=sys.stderr)
+                        stats["dropped"][det_cls] += 1
+                        continue
+                    # scale the canonical box into the saved (original) image's coords
+                    bx = max(0, min(W, reg.x * can_to_save))
+                    by = max(0, min(H, reg.y * can_to_save))
+                    bw = min(W - bx, reg.w * can_to_save)
+                    bh = min(H - by, reg.h * can_to_save)
+                    box = [int(round(bx)), int(round(by)),
+                           int(round(bw)), int(round(bh))]
                 stats["methods"][method] = stats["methods"].get(method, 0) + 1
-                if reg.w < 20 or reg.h < 20:
-                    print(f"  drop (no box): {path}", file=sys.stderr)
-                    stats["pos_dropped"] += 1
-                    continue
-                # scale the canonical box into the saved (original) image's coords
-                bx = max(0, min(W, reg.x * can_to_save))
-                by = max(0, min(H, reg.y * can_to_save))
-                bw = min(W - bx, reg.w * can_to_save)
-                bh = min(H - by, reg.h * can_to_save)
-                box = [int(round(bx)), int(round(by)), int(round(bw)), int(round(bh))]
-                stats["pos"] += 1
+                stats["boxed"][det_cls] += 1
             else:
-                stats["neg"] += 1
+                stats["background"] += 1
 
             cv2.imwrite(dst, save_img, [cv2.IMWRITE_JPEG_QUALITY, 92])
 
             if args.overlays and box is not None:
                 ov = save_img.copy()
                 x, y, w, h = box
-                cv2.rectangle(ov, (x, y), (x + w, y + h), (0, 255, 0), 3)
-                cv2.putText(ov, f"rayban_meta [{method}]", (x, max(20, y - 8)),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                color = (0, 255, 0) if det_cls == "rayban_meta" else (0, 165, 255)
+                cv2.rectangle(ov, (x, y), (x + w, y + h), color, 3)
+                cv2.putText(ov, f"{det_cls} [{method}]", (x, max(20, y - 8)),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
                 cv2.imwrite(os.path.join(OVERLAY_DIR, name), ov)
 
             records.append({
                 "image": rel.replace("\\", "/"),
                 "w": W, "h": H,
                 "label": label,
+                "cls": det_cls,
                 "split": split,
                 "group": group,
                 "source": source,
@@ -197,17 +266,24 @@ def main(argv=None):
     with open(os.path.join(OUT_DIR, "boxes.json"), "w") as fh:
         json.dump(manifest, fh, indent=1)
 
-    # Split summary
-    tr_pos = sum(1 for r in records if r["label"] == 1 and r["split"] == "train")
-    va_pos = sum(1 for r in records if r["label"] == 1 and r["split"] == "val")
-    tr_neg = sum(1 for r in records if r["label"] == 0 and r["split"] == "train")
-    va_neg = sum(1 for r in records if r["label"] == 0 and r["split"] == "val")
+    # Split summary (per detector class)
+    def _n(cls, split):
+        return sum(1 for r in records if r["cls"] == cls and r["split"] == split)
+
     print(f"\nwrote {os.path.join(OUT_DIR, 'boxes.json')}")
-    print(f"positives boxed : {stats['pos']}  (dropped {stats['pos_dropped']})")
-    print(f"negatives       : {stats['neg']}  (meglass skipped {stats['meglass_skipped']})")
-    print(f"read errors     : {stats['read_error']}")
-    print(f"localize methods: {stats['methods']}")
-    print(f"split  train: pos={tr_pos} neg={tr_neg}   val: pos={va_pos} neg={va_neg}")
+    print(f"rayban_meta boxed: {stats['boxed']['rayban_meta']}  "
+          f"(dropped {stats['dropped']['rayban_meta']}, "
+          f"kept from review {stats['merged']})")
+    print(f"glasses boxed    : {stats['boxed']['glasses']}  "
+          f"(dropped {stats['dropped']['glasses']}, "
+          f"meglass skipped {stats['meglass_skipped']})")
+    print(f"no-glasses bg    : {stats['background']}")
+    print(f"read errors      : {stats['read_error']}")
+    print(f"localize methods : {stats['methods']}")
+    print(f"split  train: rayban={_n('rayban_meta', 'train')} "
+          f"glasses={_n('glasses', 'train')} noglasses={_n(None, 'train')}   "
+          f"val: rayban={_n('rayban_meta', 'val')} "
+          f"glasses={_n('glasses', 'val')} noglasses={_n(None, 'val')}")
     return 0
 
 

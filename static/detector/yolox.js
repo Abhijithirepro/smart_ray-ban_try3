@@ -1,23 +1,28 @@
-/* YOLOX-Nano detector — the trained Ray-Ban Meta detector, run in the browser.
+/* YOLOX-Nano detector — the trained two-class glasses detector, run in the browser.
  *
  * This is the SAME model used server-side (runs/rayban_yolox/best_ckpt.pth,
- * exported to static/models/yolox_nano_rayban.onnx). It emits ONE whole-glasses
- * box + a confidence, so the verdict is simply:
+ * exported to static/models/yolox_nano_rayban.onnx). It emits per-class boxes
+ * (class 0 = rayban_meta, class 1 = glasses), so the verdict is three-way:
  *
- *   META (SMART GLASSES) = top box confidence >= conf   (default 0.40)
- *   NORMAL               = otherwise
+ *   META (SMART GLASSES) = rayban box confidence  >= conf          (default 0.40)
+ *   NORMAL               = else glasses box conf. >= conf_glasses  (default 0.35)
+ *   NOGLASSES            = otherwise (no eyewear on the face)
+ *
+ * A single-class model file (meta.json without "classes") still works: the decode
+ * falls back to one class and the verdict to the old binary META/NORMAL.
  *
  * There is no per-corner probability (unlike the older corner CNN); the meter
- * shows the box confidence and the two corner cards read n/a. The overlay draws
- * the glasses box plus a camera marker at each top-outer end-piece (parity with
- * mark_cameras.py), where the Ray-Ban Meta cameras physically sit.
+ * shows the rayban box confidence and the two corner cards read n/a. The overlay
+ * draws the winning box, plus a camera marker at each top-outer end-piece (parity
+ * with mark_cameras.py) when the verdict is META.
  *
  * Preprocess and decode are a bit-faithful port of YOLOX's own preproc +
  * demo_postprocess (verified against infer.YoloxDetector, 0.00px diff): letterbox
  * to NxN with 114 padding, BGR channel order, NO normalization; the ONNX output is
- * a RAW [1,8400,6] grid (exported decode_in_inference=False) decoded here with the
- * stride grid. Geometry/thresholds come from static/models/yolox.meta.json so the
- * browser and the training config can never drift. */
+ * a RAW [1,8400,5+numClasses] grid (exported decode_in_inference=False) decoded
+ * here with the stride grid. Geometry/thresholds come from
+ * static/models/yolox.meta.json so the browser and training config can never
+ * drift. */
 (function (root, factory) {
   var mod = factory(root);
   if (typeof module !== 'undefined' && module.exports) { module.exports = mod; }
@@ -36,6 +41,10 @@ function (root) {
     if (_meta.input == null) { _meta.input = 640; }
     if (!_meta.strides) { _meta.strides = [8, 16, 32]; }
     if (_meta.conf == null) { _meta.conf = 0.40; }
+    /* number of classes comes from meta.json ("classes": [...]); an old
+       single-class meta has no list and decodes 6-wide rows as before */
+    _meta.numClasses = (_meta.classes && _meta.classes.length) || 1;
+    if (_meta.conf_glasses == null) { _meta.conf_glasses = 0.35; }
     _grid = null;         // rebuilt lazily for the current input/strides
   }
   function ready() { return !!_session; }
@@ -94,31 +103,52 @@ function (root) {
   }
 
   /**
-   * Decode the raw [8400,6] output and return the single highest-scoring box in
-   * ORIGINAL image pixels. Pure/testable: no cv or ORT here.
-   * @param {Float32Array|number[]} d  flat 8400*6 [rx,ry,rw,rh,obj,cls]
+   * Decode the raw [8400, 5+numClasses] output and return the highest-scoring box
+   * PER CLASS in ORIGINAL image pixels. Pure/testable: no cv or ORT here.
+   * @param {Float32Array|number[]} d  flat 8400*(5+nc) [rx,ry,rw,rh,obj,cls0,cls1..]
    * @param {number} r                 letterbox ratio from preprocess()
-   * @returns {{x1:number,y1:number,x2:number,y2:number,score:number}}
+   * @returns {Array<{x1:number,y1:number,x2:number,y2:number,score:number}>}
+   *          index 0 = rayban_meta, index 1 = glasses (when present)
    */
-  function decodeTop(d, r) {
+  function decodePerClass(d, r) {
     var g = buildGrid(_meta.input, _meta.strides);
-    var rows = g.gx.length, i, base, score, best = -1, bi = 0;
+    var nc = _meta.numClasses || 1;
+    var stride = 5 + nc;
+    var rows = g.gx.length, i, c, base, obj, score;
+    var best = [], bi = [];
+    for (c = 0; c < nc; c += 1) { best.push(-1); bi.push(0); }
     for (i = 0; i < rows; i += 1) {
-      base = i * 6;
-      score = d[base + 4] * d[base + 5];       // obj * cls (both already sigmoid)
-      if (score > best) { best = score; bi = i; }
+      base = i * stride;
+      obj = d[base + 4];                       // obj & cls already sigmoid
+      for (c = 0; c < nc; c += 1) {
+        score = obj * d[base + 5 + c];
+        if (score > best[c]) { best[c] = score; bi[c] = i; }
+      }
     }
-    base = bi * 6;
-    var s = g.st[bi];
-    var cx = (d[base] + g.gx[bi]) * s;
-    var cy = (d[base + 1] + g.gy[bi]) * s;
-    var w = Math.exp(d[base + 2]) * s;
-    var h = Math.exp(d[base + 3]) * s;
-    return {
-      x1: (cx - w / 2) / r, y1: (cy - h / 2) / r,
-      x2: (cx + w / 2) / r, y2: (cy + h / 2) / r,
-      score: best
-    };
+    var out = [];
+    for (c = 0; c < nc; c += 1) {
+      base = bi[c] * stride;
+      var s = g.st[bi[c]];
+      var cx = (d[base] + g.gx[bi[c]]) * s;
+      var cy = (d[base + 1] + g.gy[bi[c]]) * s;
+      var w = Math.exp(d[base + 2]) * s;
+      var h = Math.exp(d[base + 3]) * s;
+      out.push({
+        x1: (cx - w / 2) / r, y1: (cy - h / 2) / r,
+        x2: (cx + w / 2) / r, y2: (cy + h / 2) / r,
+        score: best[c]
+      });
+    }
+    return out;
+  }
+
+  /** Back-compat: single highest-scoring box across all classes. */
+  function decodeTop(d, r) {
+    var per = decodePerClass(d, r), top = per[0], i;
+    for (i = 1; i < per.length; i += 1) {
+      if (per[i].score > top.score) { top = per[i]; }
+    }
+    return top;
   }
 
   /** Two camera-module points at the top-outer corners of a box (mark_cameras
@@ -149,26 +179,49 @@ function (root) {
     var t = new ort.Tensor('float32', pre.data, [1, 3, _meta.input, _meta.input]);
     return _session.run({ images: t }).then(function (out) {
       var key = out.output ? 'output' : Object.keys(out)[0];
-      var box = decodeTop(out[key].data, pre.r);
-      var conf = _meta.conf;
-      var isMeta = box.score >= conf;
+      var per = decodePerClass(out[key].data, pre.r);
+      var rb = per[0];                       // class 0: rayban_meta
+      var gl = per.length > 1 ? per[1] : null;  // class 1: glasses
+      var conf = _meta.conf, confG = _meta.conf_glasses;
+      var isMeta = rb.score >= conf;
+      var isGlasses = !isMeta && !!gl && gl.score >= confG;
+      /* single-class model (no glasses class): keep the old binary verdict */
+      var verdict = isMeta ? 'META' : (isGlasses || !gl ? 'NORMAL' : 'NOGLASSES');
       var r3 = function (p) { return Math.round(p * 1000) / 1000; };
 
       var geom = { colorW: W, colorH: H };
-      if (isMeta) {
-        var x = Math.max(0, box.x1), y = Math.max(0, box.y1);
-        var w = Math.min(W, box.x2) - x, h = Math.min(H, box.y2) - y;
+      var src = isMeta ? rb : (isGlasses ? gl : null);
+      if (src) {
+        var x = Math.max(0, src.x1), y = Math.max(0, src.y1);
+        var w = Math.min(W, src.x2) - x, h = Math.min(H, src.y2) - y;
         geom.region = [x, y, w, h];
-        geom.cameras = cameraPoints(x, y, w, h);
+        if (isMeta) { geom.cameras = cameraPoints(x, y, w, h); }
+      }
+      var reason;
+      if (isMeta) {
+        reason = 'Ray-Ban Meta glasses detected — box confidence ' +
+          r3(rb.score) + ' (need >= ' + conf + ')';
+      } else if (isGlasses) {
+        reason = 'normal glasses detected — glasses confidence ' + r3(gl.score) +
+          ' (need >= ' + confG + '); Ray-Ban Meta ' + r3(rb.score) +
+          ' (need >= ' + conf + ')';
+      } else if (gl) {
+        reason = 'no eyewear detected — Ray-Ban Meta ' + r3(rb.score) +
+          ' (need >= ' + conf + '), glasses ' + r3(gl.score) +
+          ' (need >= ' + confG + ')';
+      } else {
+        reason = 'no Ray-Ban Meta glasses detected — box confidence ' +
+          r3(rb.score) + ' (need >= ' + conf + ')';
       }
       return {
-        verdict: isMeta ? 'META' : 'NORMAL',
+        verdict: verdict,
         per_corner: { L: { cam_prob: null }, R: { cam_prob: null } },
         prob_left: null, prob_right: null,
-        overall_score: r3(box.score),
+        overall_score: r3(rb.score),
+        glasses_score: gl ? r3(gl.score) : null,
         threshold: conf,
-        reason: (isMeta ? 'Ray-Ban Meta glasses detected' : 'no Ray-Ban Meta glasses detected') +
-          ' — box confidence ' + r3(box.score) + ' (need >= ' + conf + ')',
+        threshold_glasses: confG,
+        reason: reason,
         segment_method: 'yolox',
         locate_method: 'yolox-nano',
         geom: geom
@@ -177,6 +230,7 @@ function (root) {
   }
 
   return { setSession: setSession, ready: ready, meta: meta,
-           preprocess: preprocess, decodeTop: decodeTop, detect: detect,
+           preprocess: preprocess, decodeTop: decodeTop,
+           decodePerClass: decodePerClass, detect: detect,
            _buildGrid: buildGrid };
 });
