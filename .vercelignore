@@ -6,7 +6,7 @@
 *.pt
 pipeline/
 tools/
-requirements.txt
+requirements-dev.txt
 # anchored: exclude the top-level Python models/ but KEEP static/models/ (the
 # site's ONNX detectors) — an unanchored "models/" would strip those and break it
 /models/

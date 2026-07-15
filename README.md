@@ -50,7 +50,9 @@ make.
 cd try3-non-ml
 python3 -m venv venv
 source venv/bin/activate
-pip install -r requirements.txt        # numpy, Pillow, opencv-python-headless
+pip install -r requirements-dev.txt    # numpy, Pillow, opencv-python-headless
+# (named requirements-dev.txt, not requirements.txt, so Vercel does not
+#  auto-detect this static site as a Python backend)
 # for the web UI also:
 pip install flask
 ```
