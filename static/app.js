@@ -357,7 +357,10 @@
     }, 1100);
 
     setStatus('scan complete · ' + payload.segment_method + ' segmentation', '');
-    result.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    /* the result now fits one desktop screen beside the intro — land at the top
+       so masthead + intro + the whole result panel are all in view at once
+       (rather than nudging only the top edge of a tall image into view). */
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   }
 
   /**

@@ -96,8 +96,16 @@ body {
   align-items: start;
 }
 @media (max-width: 980px) { .stage { grid-template-columns: 1fr; } }
-/* once a scan result is shown, give it the full page width */
-body.has-result .stage { grid-template-columns: 1fr; }
+/* once a scan result is shown, keep the intro on the left (it stays visible) and
+   hand most of the width to the result column on its right — so the verdict and
+   every detail sit BESIDE the intro, not below the fold. Trim the top padding to
+   reclaim vertical space so masthead + intro + result all fit one screen. */
+@media (min-width: 981px) {
+  body.has-result .stage {
+    grid-template-columns: 0.5fr 1.5fr;
+    padding-top: clamp(18px, 2.5vw, 32px);
+  }
+}
 
 .intro__title {
   font-family: var(--display); font-weight: 800; font-size: clamp(38px, 6vw, 68px);
@@ -298,6 +306,41 @@ body.has-result .stage { grid-template-columns: 1fr; }
   transition: transform .15s, box-shadow .25s;
 }
 .again:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(198,242,78,.25); }
+
+/* ---------- desktop result: everything on one screen, no scroll ----------
+   On wide screens lay the result out as [ annotated image | details ] side by
+   side and cap both columns to the viewport height, so the verdict, meter,
+   corner scores, "why" text and actions all read in a single view (and a single
+   screenshot). Mobile (≤980px) keeps the stacked layout above, untouched. */
+@media (min-width: 981px) {
+  .result {
+    /* equal split: the webcam frame is landscape and letterboxes anyway, so the
+       details panel can take half — that keeps the verdict on one/two lines and
+       the "why" text short enough to clear the height budget */
+    grid-template-columns: 1fr 1fr;
+    /* leave room for masthead + trimmed stage padding + the mode-tabs row that
+       sits above the result in the console column */
+    max-height: calc(100vh - 190px);
+    min-height: 0;
+  }
+  .result__viz { min-height: 0; max-height: calc(100vh - 190px); }
+  .result__img { max-height: calc(100vh - 190px); }
+
+  /* tighten the details panel to the same vertical budget as the image so the
+     verdict, meter, both corners, the "why" text and the actions all fit */
+  .result__panel { padding: clamp(16px, 1.6vw, 24px); gap: clamp(10px, 1.1vw, 14px); min-height: 0; overflow: auto; }
+  .result__panel .verdict { gap: 4px; }
+  .result__panel .verdict__text {
+    font-size: clamp(24px, 2.4vw, 38px); line-height: 1; overflow-wrap: break-word;
+  }
+  .result__panel .verdict__reason { font-size: 12.5px; line-height: 1.4; }
+  .result__panel .corner { padding: 12px 14px; }
+  .result__panel .corner__score { font-size: 28px; }
+  .result__panel .corner__state { margin-top: 6px; }
+  .result__panel .why__title { font-size: 10.5px; }
+  .result__panel .why__text { margin-top: 7px; padding: 11px 13px; font-size: 12px; line-height: 1.5; }
+  .result__panel .result__actions { margin-top: auto; }
+}
 
 /* status / errors */
 .status { margin-top: 18px; min-height: 20px; font-size: 12.5px; letter-spacing: .08em; color: var(--fog); }
