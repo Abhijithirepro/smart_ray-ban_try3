@@ -23,12 +23,20 @@
   /* YOLOX-Nano whole-glasses detector (onnxruntime-web): the PRIMARY detector —
      the same model trained/run server-side (box + confidence -> META/NORMAL) */
   var yoloxReady = false;
+  /* set true only if the YOLOX ONNX genuinely FAILS to load (see loadYoloxModel).
+     Until YOLOX either loads or fails we must NOT treat the app as ready on the
+     legacy pipeline alone — the legacy detectors load faster, so an early scan
+     would silently run the old, less-accurate pipeline and return a wrong verdict
+     that "fixes itself" once YOLOX finishes. */
+  var yoloxFailed = false;
 
-  /** True once the detector can run. YOLOX needs only cv + its ONNX session (no
-      Haar cascades); the legacy pipeline additionally needs the cascades. */
+  /** True once the detector can run. The PRIMARY detector is YOLOX; we wait for it
+      (cv + its ONNX session, no Haar cascades). Only if YOLOX failed to load do we
+      allow the legacy pipeline (which additionally needs the cascades). */
   function detectReady() {
-    if (cvReady && yoloxReady) { return true; }
-    return cvReady && facesReady && (cornersReady || cnnReady || model !== null);
+    if (!cvReady) { return false; }
+    if (yoloxReady) { return true; }
+    return yoloxFailed && facesReady && (cornersReady || cnnReady || model !== null);
   }
 
   /** fetch a file as a Uint8Array (rejects on non-200). */
@@ -132,6 +140,7 @@
       if (detectReady()) { setStatus('', ''); }
     }).catch(function (e) {
       if (window.console) { window.console.warn('YOLOX model unavailable, using corner/region pipeline:', e); }
+      yoloxFailed = true;   // now (and only now) the legacy pipeline may take over
       if (detectReady()) { setStatus('', ''); }
     });
   }
@@ -589,6 +598,13 @@
    */
   function captureAndAnalyze() {
     if (mode !== 'camera' || !stream) { return; }
+    /* wait for the primary (YOLOX) detector — otherwise an early capture runs the
+       slower-loading legacy pipeline and returns a wrong verdict (keep the CAPTURE
+       control up so the user can simply press it again a moment later). */
+    if (!detectReady()) {
+      setStatus('detector still loading — one moment …', 'busy');
+      return;
+    }
     var live = el('live');
     var canvas = grabLiveFrame(live);
     lastPhoto = canvas.toDataURL('image/png');
