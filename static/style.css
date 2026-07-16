@@ -70,6 +70,22 @@ body {
 }
 .masthead__meta { color: var(--fog); font-size: 11.5px; letter-spacing: .14em; }
 
+/* model-load indicator: amber+pulse while loading, solid green when ready to
+   give correct verdicts, red if the model failed to load */
+.model-status { display: inline-flex; align-items: center; gap: 8px;
+  font-family: var(--mono); text-transform: uppercase; }
+.model-status__dot { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+.model-status.is-loading { color: var(--warn); }
+.model-status.is-loading .model-status__dot {
+  background: var(--warn); box-shadow: 0 0 12px var(--warn);
+  animation: pulse 1.4s ease-in-out infinite; }
+.model-status.is-ready { color: var(--safe); }
+.model-status.is-ready .model-status__dot {
+  background: var(--safe); box-shadow: 0 0 12px var(--safe); }
+.model-status.is-failed { color: var(--alert); }
+.model-status.is-failed .model-status__dot {
+  background: var(--alert); box-shadow: 0 0 12px var(--alert); }
+
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
 
 /* ---------- stage ---------- */

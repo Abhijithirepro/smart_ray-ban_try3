@@ -176,6 +176,38 @@
   }
 
   /**
+   * Drive the masthead model-load dot: green once the app can produce correct
+   * verdicts (YOLOX + cv up), red if YOLOX failed to load (running on the legacy
+   * fallback or nothing), amber while still loading.
+   */
+  function setModelStatus() {
+    var box = el('model-status'), txt = el('model-status-text');
+    if (!box || !txt) { return; }
+    if (yoloxReady && cvReady) {
+      box.className = 'model-status is-ready'; txt.textContent = 'model ready';
+    } else if (yoloxFailed) {
+      box.className = 'model-status is-failed';
+      txt.textContent = detectReady() ? 'model failed — using fallback'
+                                      : 'model failed to load';
+    } else {
+      box.className = 'model-status is-loading'; txt.textContent = 'loading model…';
+    }
+  }
+
+  /** Keep the model dot in sync until the model has definitively loaded/failed. */
+  function watchModelStatus() {
+    setModelStatus();
+    var ticks = 0;
+    var iv = window.setInterval(function () {
+      setModelStatus();
+      ticks += 1;
+      if ((yoloxReady && cvReady) || yoloxFailed || ticks > 160) {
+        window.clearInterval(iv); setModelStatus();
+      }
+    }, 250);
+  }
+
+  /**
    * Format a 0..1 number to two decimals.
    * @param {number} n
    * @returns {string}
@@ -692,6 +724,7 @@
     /* load models + the OpenCV.js runtime up front. Primary: the region CNN
        (onnxruntime-web). Fallback: the legacy HOG corner classifier JSON. */
     setStatus('loading detector …', 'busy');
+    watchModelStatus();   // drive the masthead model-load dot (amber→green/red)
     fetch('static/camera_clf.json')
       .then(function (r) { return r.json(); })
       .then(function (m) { model = m; if (detectReady()) { setStatus('', ''); } })
