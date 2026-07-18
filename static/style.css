@@ -88,28 +88,23 @@ body {
 
 @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
 
-/* ---------- stage ---------- */
+/* ---------- stage: slim banner on top, full-width scanner below ---------- */
 .stage {
-  position: relative; z-index: 2;
-  max-width: 1320px; margin: 0 auto; padding: clamp(28px, 6vw, 72px) clamp(18px, 4vw, 56px);
-  display: grid; grid-template-columns: 0.62fr 1.38fr; gap: clamp(28px, 5vw, 64px);
-  align-items: start;
-}
-@media (max-width: 980px) { .stage { grid-template-columns: 1fr; } }
-/* once a scan result is shown, keep the intro on the left (it stays visible) and
-   hand most of the width to the result column on its right — so the verdict and
-   every detail sit BESIDE the intro, not below the fold. Trim the top padding to
-   reclaim vertical space so masthead + intro + result all fit one screen. */
-@media (min-width: 981px) {
-  body.has-result .stage {
-    grid-template-columns: 0.5fr 1.5fr;
-    padding-top: clamp(18px, 2.5vw, 32px);
-  }
+  position: relative; z-index: 2; width: 100%;
+  max-width: 1320px; margin: 0 auto;
+  padding: clamp(12px, 1.6vw, 22px) clamp(18px, 4vw, 56px);
+  display: flex; flex-direction: column; gap: clamp(12px, 1.4vw, 18px);
 }
 
+/* one-line intro banner: small title + short lede side by side */
+.intro--banner {
+  display: flex; align-items: baseline; gap: 8px 20px; flex-wrap: wrap;
+  padding-bottom: clamp(10px, 1.2vw, 14px); border-bottom: 1px solid var(--line);
+}
 .intro__title {
-  font-family: var(--display); font-weight: 800; font-size: clamp(38px, 6vw, 68px);
-  line-height: .98; letter-spacing: -.02em; margin: 0 0 22px;
+  font-family: var(--display); font-weight: 800;
+  font-size: clamp(18px, 2vw, 26px); line-height: 1.1; letter-spacing: -.01em;
+  margin: 0; white-space: nowrap;
   animation: rise .7s cubic-bezier(.2,.8,.2,1) both;
 }
 .intro__title em {
@@ -117,8 +112,16 @@ body {
   text-shadow: 0 0 30px rgba(198,242,78,.35);
 }
 .intro__lede {
-  color: var(--fog); font-size: 14px; line-height: 1.7; max-width: 46ch;
+  margin: 0; color: var(--fog); font-size: 12.5px; line-height: 1.5;
+  flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   animation: rise .7s .08s cubic-bezier(.2,.8,.2,1) both;
+}
+@media (max-width: 980px) {
+  /* stack the banner: title above, lede below, both wrapping normally
+     (as flex items the title refuses to shrink and starves the lede) */
+  .intro--banner { display: block; }
+  .intro__title { white-space: normal; margin-bottom: 6px; }
+  .intro__lede { white-space: normal; overflow: visible; }
 }
 
 @keyframes rise { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
@@ -307,40 +310,6 @@ body {
 }
 .again:hover { transform: translateY(-2px); box-shadow: 0 10px 26px rgba(198,242,78,.25); }
 
-/* ---------- desktop result: everything on one screen, no scroll ----------
-   On wide screens lay the result out as [ annotated image | details ] side by
-   side and cap both columns to the viewport height, so the verdict, meter,
-   corner scores, "why" text and actions all read in a single view (and a single
-   screenshot). Mobile (≤980px) keeps the stacked layout above, untouched. */
-@media (min-width: 981px) {
-  .result {
-    /* equal split: the webcam frame is landscape and letterboxes anyway, so the
-       details panel can take half — that keeps the verdict on one/two lines and
-       the "why" text short enough to clear the height budget */
-    grid-template-columns: 1fr 1fr;
-    /* leave room for masthead + trimmed stage padding + the mode-tabs row that
-       sits above the result in the console column */
-    max-height: calc(100vh - 190px);
-    min-height: 0;
-  }
-  .result__viz { min-height: 0; max-height: calc(100vh - 190px); }
-  .result__img { max-height: calc(100vh - 190px); }
-
-  /* tighten the details panel to the same vertical budget as the image so the
-     verdict, meter, both corners, the "why" text and the actions all fit */
-  .result__panel { padding: clamp(16px, 1.6vw, 24px); gap: clamp(10px, 1.1vw, 14px); min-height: 0; overflow: auto; }
-  .result__panel .verdict { gap: 4px; }
-  .result__panel .verdict__text {
-    font-size: clamp(24px, 2.4vw, 38px); line-height: 1; overflow-wrap: break-word;
-  }
-  .result__panel .verdict__reason { font-size: 12.5px; line-height: 1.4; }
-  .result__panel .corner { padding: 12px 14px; }
-  .result__panel .corner__score { font-size: 28px; }
-  .result__panel .corner__state { margin-top: 6px; }
-  .result__panel .why__title { font-size: 10.5px; }
-  .result__panel .why__text { margin-top: 7px; padding: 11px 13px; font-size: 12px; line-height: 1.5; }
-  .result__panel .result__actions { margin-top: auto; }
-}
 
 /* status / errors */
 .status { margin-top: 18px; min-height: 20px; font-size: 12.5px; letter-spacing: .08em; color: var(--fog); }
@@ -354,4 +323,217 @@ body {
   flex-wrap: wrap; gap: 10px;
   padding: 20px clamp(18px, 4vw, 56px); border-top: 1px solid var(--line);
   color: var(--fog); font-size: 11px; letter-spacing: .12em;
+}
+
+/* ============================ TESTER MODE ============================ */
+
+/* ---------- name gate (modal asked once on open) ---------- */
+.namegate {
+  position: fixed; inset: 0; z-index: 50; display: grid; place-items: center;
+  padding: 20px; background: rgba(7,8,10,.9);
+  -webkit-backdrop-filter: blur(5px); backdrop-filter: blur(5px);
+}
+.namegate__card {
+  width: 100%; max-width: 420px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 14px; box-shadow: var(--shadow);
+  padding: clamp(24px, 4vw, 40px);
+}
+.namegate__title {
+  margin: 0 0 8px; font-family: var(--display); font-weight: 800;
+  font-size: clamp(22px, 3vw, 30px); letter-spacing: .01em;
+}
+.namegate__lede { margin: 0 0 20px; color: var(--fog); font-size: 13px; line-height: 1.5; }
+.namegate__input {
+  width: 100%; font-family: var(--mono); font-size: 15px; color: var(--chalk);
+  background: var(--ink-2); border: 1px solid var(--line); border-radius: 8px;
+  padding: 13px 14px; transition: border-color .2s, box-shadow .2s;
+}
+.namegate__input::placeholder { color: var(--fog); }
+.namegate__input:focus {
+  outline: none; border-color: var(--acid);
+  box-shadow: 0 0 0 1px rgba(198,242,78,.25);
+}
+.namegate__err { margin: 10px 0 0; color: var(--alert); font-size: 12px; letter-spacing: .06em; }
+.namegate__go { width: 100%; margin-top: 20px; align-self: stretch; text-align: center; }
+
+/* ---------- correctness tag ("was this correct?") ---------- */
+.ctag { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
+.ctag__q { color: var(--fog); font-size: 12.5px; letter-spacing: .08em; }
+.ctag__btn {
+  cursor: pointer; font-family: var(--mono); font-weight: 700; font-size: 12px;
+  letter-spacing: .1em; padding: 9px 16px; border-radius: 8px; background: transparent;
+  transition: transform .15s, background .2s, box-shadow .2s;
+}
+.ctag__btn--yes { color: var(--safe); box-shadow: inset 0 0 0 1.5px var(--safe); }
+.ctag__btn--no  { color: var(--alert); box-shadow: inset 0 0 0 1.5px var(--alert); }
+.ctag__btn:hover { transform: translateY(-1px); }
+.ctag__btn--yes.is-selected { color: var(--ink); background: var(--safe); }
+.ctag__btn--no.is-selected  { color: var(--ink); background: var(--alert); }
+
+/* ---------- auto-send status line ---------- */
+.send-status { min-height: 16px; margin-top: 8px; font-size: 12px; letter-spacing: .06em; color: var(--fog); }
+.send-status.is-pending::after { content: "_"; animation: blink 1s steps(1) infinite; }
+.send-status.is-ok { color: var(--safe); }
+.send-status.is-fail { color: var(--alert); }
+.send-status:empty { display: none; }
+
+/* ---------- session history gallery ---------- */
+.history { position: relative; z-index: 2; margin-top: 34px; border-top: 1px solid var(--line); padding-top: 22px; }
+.history__title {
+  display: flex; align-items: center; gap: 10px; margin: 0 0 16px;
+  font-family: var(--mono); font-weight: 700; font-size: 12.5px; letter-spacing: .22em;
+  color: var(--chalk);
+}
+.history__count {
+  font-family: var(--mono); font-size: 12px; color: var(--ink); background: var(--acid);
+  border-radius: 999px; padding: 2px 10px; letter-spacing: .05em;
+}
+.history__grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px;
+}
+.hcard {
+  border: 1px solid var(--line); border-radius: 12px; background: var(--ink-2);
+  overflow: hidden; border-top-width: 3px;
+}
+.hcard.is-meta { border-top-color: var(--alert); }
+.hcard.is-normal { border-top-color: var(--safe); }
+.hcard.is-maybe { border-top-color: var(--warn); }
+.hcard.is-noglasses { border-top-color: var(--muted); }
+.hcard__img { width: 100%; aspect-ratio: 4 / 3; object-fit: cover; display: block; background: var(--ink); }
+.hcard__foot { display: flex; align-items: center; gap: 6px; padding: 9px 11px; }
+.hcard__verdict { flex: 1; min-width: 0; font-size: 10.5px; font-weight: 700; letter-spacing: .06em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hcard.is-meta .hcard__verdict { color: var(--alert); }
+.hcard.is-normal .hcard__verdict { color: var(--safe); }
+.hcard.is-maybe .hcard__verdict { color: var(--warn); }
+.hcard.is-noglasses .hcard__verdict { color: var(--muted); }
+.hcard__conf { font-size: 11px; color: var(--fog); }
+.hcard__glyph { font-size: 13px; font-weight: 700; color: var(--fog); }
+.history__actions { display: flex; justify-content: flex-end; margin-top: 16px; }
+
+/* ---------- desktop: ONE VIEW, no page scroll ----------
+   The whole page is locked to the viewport as a vertical flex stack:
+   masthead → intro banner → scanner console (absorbs all free height) →
+   history filmstrip. Camera preview, drop zone and result all stretch to fill
+   the console area; only inner panels (details, filmstrip) scroll within
+   themselves. Mobile (≤980px) keeps the stacked scrolling layout. */
+@media (min-width: 981px) {
+  html, body { height: 100dvh; overflow: hidden; }
+  body { display: flex; flex-direction: column; }
+  .masthead { flex: none; padding-top: 14px; padding-bottom: 14px; }
+  /* reclaim height; the footer's info lines are non-essential on desktop
+     (footer.footer outranks the base .footer{display:flex} defined later) */
+  footer.footer { display: none; }
+
+  .stage { flex: 1; min-height: 0; }
+  .intro--banner { flex: none; }
+
+  /* console = tabs + scan surface + controls + history strip, top to bottom */
+  .console { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .mode-tabs { flex: none; margin-bottom: 12px; }
+  .mode-tab { padding: 9px 14px; }
+
+  /* camera mode fills the free height; the video letterboxes fully inside it.
+     Use max-width/height + auto so the frame is bounded by BOTH dimensions and
+     never clips (object-fit alone fails when the flex/grid wrapper won't shrink
+     below the video's natural height). */
+  #camera-mode.camera { flex: 1; min-height: 0; gap: 12px; }
+  .camera__stage {
+    flex: 1; min-height: 0; min-width: 0;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .camera__live {
+    align-self: stretch; flex: 1 1 auto; min-height: 0; min-width: 0; height: auto;
+    width: 100%; display: flex; align-items: center; justify-content: center;
+  }
+  .camera__video {
+    width: auto; height: auto; max-width: 100%; max-height: 100%;
+    object-fit: contain;
+  }
+  .camera__controls { flex: none; gap: 10px; }
+  .camera__start { padding: 12px 26px; }
+
+  /* upload mode: the drop zone fills the same area */
+  #upload-mode { flex: 1; min-height: 0; display: flex; }
+  .drop { flex: 1; min-height: 0; }
+  /* while a result is on screen the result IS the scan surface — hide the drop
+     zone so they don't split the height (SCAN ANOTHER brings it back) */
+  body.has-result #upload-mode { display: none; }
+
+  /* result fills the scan surface: [ annotated image | details ] side by side */
+  .result {
+    flex: 1; min-height: 0;
+    grid-template-columns: 1fr 1fr;
+  }
+  .result__viz { min-height: 0; height: 100%; }
+  .result__img { width: 100%; height: 100%; max-height: none; object-fit: contain; }
+
+  /* details column: compact so verdict, meter, corners, why, tag and actions
+     all fit; scrolls internally only as a safety valve on very short screens */
+  .result__panel { padding: clamp(14px, 1.4vw, 22px); gap: clamp(8px, 1vw, 13px); min-height: 0; overflow: auto; }
+  .result__panel .verdict { gap: 4px; }
+  .result__panel .verdict__text {
+    font-size: clamp(22px, 2.2vw, 34px); line-height: 1; overflow-wrap: break-word;
+  }
+  .result__panel .verdict__reason { font-size: 12px; line-height: 1.4; }
+  .result__panel .corner { padding: 10px 13px; }
+  .result__panel .corner__score { font-size: 26px; }
+  .result__panel .corner__state { margin-top: 5px; }
+  .result__panel .why__title { font-size: 10.5px; }
+  .result__panel .why__text { margin-top: 6px; padding: 10px 12px; font-size: 11.5px; line-height: 1.45; }
+  .result__panel .result__actions { margin-top: auto; }
+  .result__panel .again { padding: 11px 16px; }
+
+  /* status line: slim, fixed */
+  .status { flex: none; margin-top: 8px; min-height: 16px; font-size: 11.5px; }
+
+  /* history: single fixed row that never scrolls — only the thumbnails that fit
+     are shown (newest first) and the rest collapse into a "+N" chip (all scans
+     are still in DOWNLOAD ALL). Download-All sits inline at the top right. */
+  .history { flex: none; position: relative; margin-top: 10px; padding-top: 12px; }
+  .history__title { margin-bottom: 8px; font-size: 11px; }
+  .history__actions { position: absolute; top: 8px; right: 0; margin: 0; }
+  .history__actions .again { padding: 8px 14px; font-size: 10.5px; }
+  .history__grid {
+    display: flex; flex-wrap: nowrap; overflow: hidden; gap: 10px;
+  }
+  .hcard { flex: 0 0 150px; }
+  .hcard__img { aspect-ratio: auto; height: 62px; }
+  .hcard__foot { padding: 6px 9px; }
+  /* overflow chip: "+N" for scans beyond what fits in the row */
+  .hcard--more {
+    flex: 0 0 auto; min-width: 66px; align-self: stretch;
+    display: flex; align-items: center; justify-content: center;
+    border: 1px dashed var(--line); border-radius: 12px; background: var(--ink-2);
+    color: var(--fog); font-family: var(--mono); font-weight: 700; font-size: 15px;
+  }
+}
+
+/* short desktop screens (e.g. 1280×720 laptops): compact the details panel and
+   the filmstrip further so verdict → tag → actions still fit without scrolling */
+@media (min-width: 981px) and (max-height: 780px) {
+  .masthead { padding-top: 10px; padding-bottom: 10px; }
+  .stage { padding-top: 8px; padding-bottom: 8px; gap: 8px; }
+  .intro--banner { padding-bottom: 8px; }
+  .intro__title { font-size: 18px; }
+  .mode-tabs { margin-bottom: 8px; }
+  .mode-tab { padding: 7px 12px; }
+  .result__panel { padding: 12px 16px; gap: 8px; }
+  .result__panel .verdict__text { font-size: 22px; }
+  .result__panel .verdict__reason { font-size: 11px; }
+  .result__panel .meter__head { margin-bottom: 5px; font-size: 10.5px; }
+  .result__panel .meter__track { height: 12px; }
+  .result__panel .corner { padding: 8px 11px; }
+  .result__panel .corner__score { font-size: 20px; }
+  .result__panel .corner__label { margin-bottom: 4px; font-size: 10px; }
+  .result__panel .why__text { margin-top: 4px; padding: 8px 10px; font-size: 10.5px; line-height: 1.4; }
+  .ctag { gap: 8px; }
+  .ctag__btn { padding: 6px 12px; font-size: 11px; }
+  .result__panel .again { padding: 9px 14px; font-size: 11px; }
+  .send-status { margin-top: 4px; font-size: 10.5px; }
+  .status { margin-top: 4px; min-height: 12px; font-size: 10.5px; }
+  .history { margin-top: 6px; padding-top: 8px; }
+  .history__title { margin-bottom: 6px; }
+  .hcard { flex: 0 0 130px; }
+  .hcard__img { height: 44px; }
+  .hcard__foot { padding: 4px 8px; }
 }

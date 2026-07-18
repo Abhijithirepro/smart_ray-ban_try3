@@ -9,6 +9,15 @@
   /* current input mode: 'camera' (default) or 'upload' */
   var mode = 'camera';
 
+  /* --- tester mode: name gate, session history, auto-send ---------------- */
+  var testerName = '';                 // filled by the name gate on load
+  var NAME_KEY = 'moduleScan.testerName';
+  var history = [];                    // every scan this session (oldest first)
+  var currentRecord = null;           // record for the scan currently on screen
+  var scanSeq = 0;                    // 1-based counter for stable filenames/ids
+  var warnedNoCollector = false;      // log the "collector off" note only once
+  var pendingSendCount = 0;           // scan uploads still in flight (guards close/recapture)
+
   /* the legacy HOG classifier weights ({w,b,mu,sd,thresh}); fallback only */
   var model = null;
   /* OpenCV.js runtime readiness */
@@ -316,6 +325,8 @@
 
     el('overlay').src = payload.overlay || '';
     lastOverlay = payload.overlay || null;   // kept for the DOWNLOAD button
+    /* add this scan to the session history and auto-send it to the developer */
+    addHistoryRecord(payload, conf);
     el('verdict-text').textContent = isMeta ? 'SMART GLASSES'
       : (isMaybe ? 'MAYBE — CHECK'
         : (isNoGlasses ? 'NO GLASSES' : 'NORMAL GLASSES'));
@@ -627,6 +638,374 @@
     document.body.removeChild(a);
   }
 
+  /* ======================================================================
+     TESTER MODE — name gate, session history, correctness tag, auto-send,
+     download-all. Everything below keeps every scan a tester takes and, when
+     a collector endpoint is configured, mails the photo + verdict to the
+     developer automatically as each scan lands.
+     ====================================================================== */
+
+  /** Map the tri-state correctness flag to an export string. */
+  function tagStr(c) { return c === true ? 'yes' : (c === false ? 'no' : 'unrated'); }
+
+  /** Human label / CSS class for a verdict (mirrors renderResult). */
+  function verdictLabel(v) {
+    return v === 'META' ? 'SMART GLASSES'
+      : (v === 'MAYBE' ? 'MAYBE'
+        : (v === 'NOGLASSES' ? 'NO GLASSES' : 'NORMAL GLASSES'));
+  }
+  function verdictClass(v) {
+    return v === 'META' ? 'is-meta'
+      : (v === 'MAYBE' ? 'is-maybe'
+        : (v === 'NOGLASSES' ? 'is-noglasses' : 'is-normal'));
+  }
+
+  /**
+   * Redraw a data URI onto a canvas and return it as a (smaller) JPEG data URI,
+   * optionally downscaled so its longest edge is <= maxEdge. Async via Image
+   * load; calls cb(null) on any failure so callers can fall back to the source.
+   */
+  function reencodeJpeg(dataURI, quality, maxEdge, cb) {
+    if (!dataURI) { cb(null); return; }
+    var im = new Image();
+    im.onload = function () {
+      try {
+        var w = im.naturalWidth || im.width;
+        var h = im.naturalHeight || im.height;
+        if (maxEdge && Math.max(w, h) > maxEdge) {
+          var s = maxEdge / Math.max(w, h);
+          w = Math.round(w * s); h = Math.round(h * s);
+        }
+        var c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        c.getContext('2d').drawImage(im, 0, 0, w, h);
+        cb(c.toDataURL('image/jpeg', quality));
+      } catch (e) { cb(null); }
+    };
+    im.onerror = function () { cb(null); };
+    im.src = dataURI;
+  }
+
+  /**
+   * Create the history record for the scan just rendered, then (async) build the
+   * downscaled JPEGs + thumbnail and fire the auto-send. Uses the module-level
+   * lastPhoto (plain capture, PNG) and lastOverlay (annotated result, PNG).
+   */
+  function addHistoryRecord(payload, conf) {
+    scanSeq += 1;
+    var rec = {
+      id: 'scan-' + Date.now() + '-' + scanSeq,
+      seq: scanSeq,
+      name: testerName,
+      verdict: payload.verdict,
+      confidence: (typeof conf === 'number' ? conf : 0),
+      correct: null,
+      timestamp: new Date().toISOString(),
+      photo: null,       // downscaled JPEG (filled below)
+      overlay: null,     // downscaled JPEG (filled below)
+      thumb: null,       // tiny JPEG for the gallery
+      sent: false
+    };
+    history.push(rec);
+    currentRecord = rec;
+    renderHistory();
+    resetTagUI();
+
+    var srcPhoto = lastPhoto;
+    var srcOverlay = lastOverlay || payload.overlay || null;
+    /* rec.sendPromise settles once the scan's row has been written server-side,
+       so a fast ✓/✗ tap (sendTag) can order itself AFTER the row exists. */
+    rec.sendPromise = new Promise(function (resolve) {
+      reencodeJpeg(srcPhoto, 0.82, 1280, function (pj) {
+        rec.photo = pj || srcPhoto;
+        reencodeJpeg(srcOverlay, 0.85, 1280, function (oj) {
+          rec.overlay = oj || srcOverlay;
+          reencodeJpeg(srcOverlay || srcPhoto, 0.6, 240, function (t) {
+            rec.thumb = t || rec.overlay || rec.photo;
+            renderHistory();
+            autoSend(rec).then(resolve, resolve);
+          });
+        });
+      });
+    });
+  }
+
+  /** Reset the "was this correct?" control for a fresh scan. */
+  function resetTagUI() {
+    var t = el('correct-tag');
+    if (t) { t.hidden = false; }
+    var yes = el('tag-yes'), no = el('tag-no');
+    if (yes) { yes.className = 'ctag__btn ctag__btn--yes'; }
+    if (no) { no.className = 'ctag__btn ctag__btn--no'; }
+  }
+
+  /** Record the tester's correctness verdict and send it as a follow-up. */
+  function onTag(val) {
+    if (!currentRecord) { return; }
+    currentRecord.correct = val;
+    var yes = el('tag-yes'), no = el('tag-no');
+    if (yes) { yes.className = 'ctag__btn ctag__btn--yes' + (val === true ? ' is-selected' : ''); }
+    if (no) { no.className = 'ctag__btn ctag__btn--no' + (val === false ? ' is-selected' : ''); }
+    renderHistory();
+    sendTag(currentRecord);
+  }
+
+  /** Build one history gallery card (DOM, no innerHTML for the name). */
+  function historyCard(rec) {
+    var card = document.createElement('div');
+    card.className = 'hcard ' + verdictClass(rec.verdict);
+    var img = document.createElement('img');
+    img.className = 'hcard__img';
+    img.alt = verdictLabel(rec.verdict);
+    img.src = rec.thumb || rec.overlay || rec.photo || '';
+    card.appendChild(img);
+    var foot = document.createElement('div');
+    foot.className = 'hcard__foot';
+    var v = document.createElement('span');
+    v.className = 'hcard__verdict'; v.textContent = verdictLabel(rec.verdict);
+    var c = document.createElement('span');
+    c.className = 'hcard__conf'; c.textContent = fmt(rec.confidence);
+    var g = document.createElement('span');
+    g.className = 'hcard__glyph';
+    g.textContent = rec.correct === true ? '✓' : (rec.correct === false ? '✗' : '—');
+    foot.appendChild(v); foot.appendChild(c); foot.appendChild(g);
+    card.appendChild(foot);
+    return card;
+  }
+
+  /** How many history cards fit in one row without scrolling (desktop). Returns
+      Infinity on mobile / when not yet laid out, so every card is shown. */
+  function maxHistoryCards(list) {
+    var desktop = window.matchMedia && window.matchMedia('(min-width: 981px)').matches;
+    if (!desktop) { return Infinity; }
+    var w = list.clientWidth;
+    if (!w) { return Infinity; }
+    /* measure a real card so the fit tracks the current card size (150 / 130px) */
+    var probe = historyCard(history[history.length - 1]);
+    probe.style.visibility = 'hidden';
+    list.appendChild(probe);
+    var cw = probe.getBoundingClientRect().width || 150;
+    list.removeChild(probe);
+    var gap = 10;
+    return Math.max(1, Math.floor((w + gap) / (cw + gap)));
+  }
+
+  /** Rebuild the session-history row (newest first). On desktop only the cards
+      that fit are shown; the remainder collapse into a "+N" chip (no scrolling —
+      every scan is still in DOWNLOAD ALL). */
+  function renderHistory() {
+    var wrap = el('history'), list = el('history-list'), count = el('history-count');
+    if (!wrap || !list) { return; }
+    if (!history.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    if (count) { count.textContent = history.length; }
+    list.innerHTML = '';
+
+    var max = maxHistoryCards(list);
+    var shown, extra;
+    if (history.length <= max) { shown = history.length; extra = 0; }
+    else { shown = Math.max(1, max - 1); extra = history.length - shown; }
+
+    var i, n = 0;
+    for (i = history.length - 1; i >= 0 && n < shown; i -= 1, n += 1) {
+      list.appendChild(historyCard(history[i]));
+    }
+    if (extra > 0) {
+      var more = document.createElement('div');
+      more.className = 'hcard hcard--more';
+      more.title = extra + ' more in DOWNLOAD ALL';
+      more.textContent = '+' + extra;
+      list.appendChild(more);
+    }
+  }
+
+  /** Decode a base64 data URI to a Uint8Array (for JSZip binary entries). */
+  function dataUriToBytes(dataURI) {
+    var comma = dataURI.indexOf(',');
+    var bin = window.atob(dataURI.substring(comma + 1));
+    var len = bin.length;
+    var bytes = new Uint8Array(len);
+    var i;
+    for (i = 0; i < len; i += 1) { bytes[i] = bin.charCodeAt(i); }
+    return bytes;
+  }
+
+  /** Serialise a 2-D array to CSV text (RFC-4180 quoting). */
+  function toCsv(rows) {
+    return rows.map(function (row) {
+      return row.map(function (cell) {
+        var s = String(cell == null ? '' : cell);
+        if (/[",\n\r]/.test(s)) { s = '"' + s.replace(/"/g, '""') + '"'; }
+        return s;
+      }).join(',');
+    }).join('\r\n');
+  }
+
+  /** A history record without the heavy image data URIs (for metadata.json). */
+  function stripImages(r) {
+    return {
+      id: r.id, seq: r.seq, name: r.name, verdict: r.verdict,
+      confidence: fmt(r.confidence), correct: tagStr(r.correct),
+      timestamp: r.timestamp, sent: r.sent
+    };
+  }
+
+  /** Package every session scan (photos + results + metadata) into one ZIP. */
+  function downloadAllZip() {
+    if (!window.JSZip) { setStatus('zip library not loaded', 'error'); return; }
+    if (!history.length) { setStatus('no scans yet', 'error'); return; }
+    var zip = new window.JSZip();
+    var rows = [['id', 'name', 'verdict', 'confidence', 'correct',
+      'timestamp', 'photo_file', 'result_file']];
+    history.forEach(function (r) {
+      var base = 'scan-' + r.seq;
+      var photoFile = '', resultFile = '';
+      if (r.photo) { photoFile = base + '-photo.jpg'; zip.file(photoFile, dataUriToBytes(r.photo), { binary: true }); }
+      if (r.overlay) { resultFile = base + '-result.jpg'; zip.file(resultFile, dataUriToBytes(r.overlay), { binary: true }); }
+      rows.push([r.seq, r.name, r.verdict, fmt(r.confidence), tagStr(r.correct),
+        r.timestamp, photoFile, resultFile]);
+    });
+    zip.file('metadata.csv', toCsv(rows));
+    zip.file('metadata.json', JSON.stringify(history.map(stripImages), null, 2));
+    setStatus('building zip …', 'busy');
+    zip.generateAsync({ type: 'blob' }).then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var safe = (testerName || 'tester').replace(/\s+/g, '_');
+      triggerDownload(url, 'module-scan-' + safe + '.zip');
+      window.setTimeout(function () { URL.revokeObjectURL(url); }, 4000);
+      setStatus('downloaded ' + history.length + ' scan' +
+        (history.length === 1 ? '' : 's') + ' as a zip', '');
+    }, function (e) {
+      setStatus('zip failed: ' + (e && e.message ? e.message : e), 'error');
+    });
+  }
+
+  /** Small status line under the result actions for auto-send state. */
+  function setSendStatus(msg, kind) {
+    var s = el('send-status');
+    if (!s) { return; }
+    s.textContent = msg;
+    s.className = 'send-status' + (kind ? ' is-' + kind : '');
+  }
+
+  /**
+   * POST a payload to the collector as a CORS "simple request" (text/plain, no
+   * custom headers) so no preflight is triggered — Google Apps Script cannot
+   * answer OPTIONS. Resolves 'ok' | 'unconfirmed' | 'fail' (never rejects).
+   */
+  function postCollector(payload) {
+    return fetch(window.COLLECTOR_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify(payload)
+    }).then(function (res) {
+      return res.text().then(function (txt) {
+        try { return JSON.parse(txt).status === 'ok' ? 'ok' : 'fail'; }
+        catch (e) { return 'unconfirmed'; }
+      }, function () { return 'unconfirmed'; });
+    }, function () {
+      /* network error OR the Apps Script 302->googleusercontent redirect lacked
+         CORS headers so the body was unreadable — the write likely still went
+         through, and the scan is safe in DOWNLOAD ALL regardless. */
+      return 'unconfirmed';
+    });
+  }
+
+  /** Auto-send one scan (photo + verdict) to the developer the moment it lands.
+      Returns a promise that settles once the POST is done (used to order the
+      correctness follow-up after this scan's row exists). */
+  function autoSend(rec) {
+    if (!window.COLLECTOR_URL) {
+      if (!warnedNoCollector) {
+        warnedNoCollector = true;
+        if (window.console) {
+          window.console.warn('COLLECTOR_URL not set in static/collector-config.js — ' +
+            'auto-send disabled; use DOWNLOAD ALL instead.');
+        }
+      }
+      return Promise.resolve();
+    }
+    setSendStatus('sending photo to developer …', 'pending');
+    pendingSendCount += 1;
+    return postCollector({
+      action: 'scan', id: rec.id, name: rec.name, verdict: rec.verdict,
+      confidence: fmt(rec.confidence), timestamp: rec.timestamp,
+      photo: rec.photo, overlay: rec.overlay
+    }).then(function (st) {
+      pendingSendCount -= 1;
+      if (st === 'fail') {
+        setSendStatus('send failed — this scan is kept in DOWNLOAD ALL', 'fail');
+      } else {
+        rec.sent = true;
+        setSendStatus(st === 'ok' ? 'sent to developer ✓' : 'sent (unconfirmed)', 'ok');
+      }
+    });
+  }
+
+  /** True while a scan upload is still in flight (closing the tab could abort it). */
+  function hasPendingSend() { return pendingSendCount > 0; }
+
+  /**
+   * Guard before leaving the current scan (RE-CAPTURE / SCAN ANOTHER). If a send
+   * is still in flight, ask the tester to wait a few seconds. Returns true if it
+   * is OK to proceed. (The upload itself keeps running in the background either
+   * way — this just nudges the tester not to rush off before it lands.)
+   */
+  function confirmLeaveWhilePending() {
+    if (!hasPendingSend()) { return true; }
+    return window.confirm(
+      'Hold on — the photo is still being sent to the developer.\n\n' +
+      'Please wait 5–10 seconds so it goes through.\n\n' +
+      'OK = continue anyway · Cancel = wait');
+  }
+
+  /** Follow-up: update the developer's row with the tester's correctness verdict.
+      Waits for this scan's send to settle first so the row is already written —
+      otherwise a fast tap could update before the row exists and be lost. */
+  function sendTag(rec) {
+    if (!window.COLLECTOR_URL || !rec) { return; }
+    var wait = rec.sendPromise || Promise.resolve();
+    wait.then(function () {
+      postCollector({ action: 'tag', id: rec.id, correct: tagStr(rec.correct) });
+    });
+    /* silent: correctness also ships in DOWNLOAD ALL, so a failed tag is harmless */
+  }
+
+  /**
+   * Name gate: ask the tester's name once (remembered across reloads). Calls
+   * onReady() once a name is set — deferring the camera start so its permission
+   * prompt doesn't fire underneath the modal.
+   */
+  function initNameGate(onReady) {
+    var gate = el('name-gate'), input = el('namegate-input'),
+        go = el('namegate-go'), err = el('namegate-err');
+    var stored = '';
+    try { stored = window.localStorage.getItem(NAME_KEY) || ''; } catch (e) { stored = ''; }
+    if (stored) {
+      testerName = stored;
+      if (gate) { gate.hidden = true; }
+      onReady();
+      return;
+    }
+    if (gate) { gate.hidden = false; }
+    if (input) { try { input.focus(); } catch (e) {} }
+    var submit = function () {
+      var v = input ? input.value.replace(/^\s+|\s+$/g, '') : '';
+      if (!v) { if (err) { err.hidden = false; } if (input) { input.focus(); } return; }
+      testerName = v;
+      try { window.localStorage.setItem(NAME_KEY, v); } catch (e) {}
+      if (gate) { gate.hidden = true; }
+      onReady();
+    };
+    if (go) { go.addEventListener('click', submit); }
+    if (input) {
+      input.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter') { ev.preventDefault(); submit(); }
+        else if (err && !err.hidden) { err.hidden = true; }
+      });
+    }
+  }
+
   /**
    * CAPTURE PHOTO handler: grab the current live frame, keep it for download,
    * then run the same detector/render path uploads use. One frame, no countdown.
@@ -661,6 +1040,7 @@
 
   /** RE-CAPTURE: drop the last verdict and return to the live preview. */
   function recapture() {
+    if (!confirmLeaveWhilePending()) { return; }
     var result = el('result');
     if (result) { result.hidden = true; }
     document.body.className = '';
@@ -771,6 +1151,8 @@
     if (again) {
       again.addEventListener('click', function () {
         if (mode === 'camera') { recapture(); return; }
+        /* upload mode: wait for a pending send before clearing the result */
+        if (!confirmLeaveWhilePending()) { return; }
         var result = el('result');
         if (result) { result.hidden = true; }
         document.body.className = '';
@@ -808,8 +1190,36 @@
     var camStart = el('cam-start');
     if (camStart) { camStart.addEventListener('click', captureAndAnalyze); }
 
-    /* camera is the default mode on load */
-    enterCamera();
+    /* correctness tag: mark whether the verdict was right (sent as a follow-up) */
+    var tagYes = el('tag-yes'), tagNo = el('tag-no');
+    if (tagYes) { tagYes.addEventListener('click', function () { onTag(true); }); }
+    if (tagNo) { tagNo.addEventListener('click', function () { onTag(false); }); }
+
+    /* DOWNLOAD ALL: every scan this session as one ZIP (photos + results + csv) */
+    var dlAll = el('download-all');
+    if (dlAll) { dlAll.addEventListener('click', downloadAllZip); }
+
+    /* re-fit the history row when the window resizes (how many thumbs fit changes) */
+    var rzTimer = null;
+    window.addEventListener('resize', function () {
+      if (rzTimer) { window.clearTimeout(rzTimer); }
+      rzTimer = window.setTimeout(function () {
+        if (history.length) { renderHistory(); }
+      }, 150);
+    });
+
+    /* closing the tab aborts any in-flight upload — warn if a photo is still
+       being sent so the tester waits the few seconds it needs to land */
+    window.addEventListener('beforeunload', function (e) {
+      if (hasPendingSend()) {
+        e.preventDefault();
+        e.returnValue = '';   // required for the browser to show its confirm dialog
+        return '';
+      }
+    });
+
+    /* ask the tester's name first, then start the camera (camera is default) */
+    initNameGate(function () { enterCamera(); });
   }
 
   document.addEventListener('DOMContentLoaded', init);

@@ -12,6 +12,22 @@
 <body>
   <div class="grain" aria-hidden="true"></div>
 
+  <!-- NAME GATE — asked once on open; the name rides on every saved/sent scan -->
+  <div id="name-gate" class="namegate" role="dialog" aria-modal="true"
+       aria-labelledby="namegate-title">
+    <div class="namegate__card">
+      <h2 id="namegate-title" class="namegate__title">Enter your name</h2>
+      <p class="namegate__lede">
+        Your name is attached to every photo you scan, so the developer knows
+        who tested what.
+      </p>
+      <input id="namegate-input" class="namegate__input" type="text"
+             autocomplete="name" placeholder="e.g. Abhijit Totager" maxlength="60" />
+      <p id="namegate-err" class="namegate__err" hidden>Please enter your name.</p>
+      <button id="namegate-go" class="again namegate__go" type="button">CONTINUE</button>
+    </div>
+  </div>
+
   <header class="masthead">
     <div class="masthead__mark">
       <span class="dot" aria-hidden="true"></span>
@@ -26,13 +42,11 @@
   </header>
 
   <main class="stage">
-    <section class="intro">
-      <h1 class="intro__title">Is there a<br /><em>camera</em> in the frame?</h1>
+    <section class="intro intro--banner">
+      <h1 class="intro__title">Is there a <em>camera</em> in the frame?</h1>
       <p class="intro__lede">
-        Point the camera at a face (or upload a photo) and capture. The scanner
-        tells apart <em>Ray-Ban&nbsp;Meta</em> smart glasses (camera in the frame),
-        ordinary glasses, and no glasses at all. Runs entirely in your browser;
-        nothing is uploaded.
+        Capture or upload a photo — the scanner tells apart
+        <em>Ray-Ban&nbsp;Meta</em> smart glasses, ordinary glasses, and no glasses.
       </p>
     </section>
 
@@ -127,12 +141,34 @@
             <p id="why-text" class="why__text"></p>
           </div>
 
+          <!-- correctness tag: tester marks whether the verdict was right -->
+          <div id="correct-tag" class="ctag" hidden>
+            <span class="ctag__q">Was this correct?</span>
+            <button id="tag-yes" class="ctag__btn ctag__btn--yes" type="button">✓&nbsp;Yes</button>
+            <button id="tag-no" class="ctag__btn ctag__btn--no" type="button">✗&nbsp;No</button>
+          </div>
+
           <div class="result__actions">
             <button id="again" class="again" type="button">SCAN ANOTHER</button>
             <button id="download" class="again again--ghost" type="button">DOWNLOAD</button>
           </div>
+          <!-- auto-send status (photo + result sent to developer on each scan) -->
+          <div id="send-status" class="send-status" role="status" aria-live="polite"></div>
         </div>
       </div>
+
+      <!-- SESSION HISTORY — every scan this session, with Download All -->
+      <section id="history" class="history" hidden>
+        <h2 class="history__title">
+          SESSION&nbsp;HISTORY <span id="history-count" class="history__count">0</span>
+        </h2>
+        <div id="history-list" class="history__grid"></div>
+        <div class="history__actions">
+          <button id="download-all" class="again again--ghost" type="button">
+            DOWNLOAD&nbsp;ALL&nbsp;(ZIP)
+          </button>
+        </div>
+      </section>
 
       <div id="status" class="status" role="status" aria-live="polite"></div>
     </section>
@@ -161,6 +197,9 @@
   <script src="static/detector/decide.js"></script>
   <script src="static/detector/yolox.js"></script>
   <script src="static/detector/index.js"></script>
+  <!-- ZIP builder (vendored) for DOWNLOAD ALL; collector endpoint for auto-send -->
+  <script src="static/vendor/jszip.min.js"></script>
+  <script src="static/collector-config.js"></script>
   <!-- UI controller -->
   <script src="static/app.js"></script>
 </body>
