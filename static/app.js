@@ -17,6 +17,9 @@
   var scanSeq = 0;                    // 1-based counter for stable filenames/ids
   var warnedNoCollector = false;      // log the "collector off" note only once
   var pendingSendCount = 0;           // scan uploads still in flight (guards close/recapture)
+  var CONSENT_DELAY_MS = 3000;        // wait after capture before asking to send
+  var consentTimer = null;            // pending 3s timer before the consent popup
+  var consentResolve = null;          // resolver for the current consent promise
 
   /* the legacy HOG classifier weights ({w,b,mu,sd,thresh}); fallback only */
   var model = null;
@@ -713,8 +716,11 @@
 
     var srcPhoto = lastPhoto;
     var srcOverlay = lastOverlay || payload.overlay || null;
-    /* rec.sendPromise settles once the scan's row has been written server-side,
-       so a fast ✓/✗ tap (sendTag) can order itself AFTER the row exists. */
+    /* rec.sendPromise settles once the scan's row has been written server-side
+       (or the tester denies sending), so a fast ✓/✗ tap (sendTag) can order
+       itself AFTER the row exists. rec.consent is null until the tester decides;
+       the correctness follow-up (sendTag) only ships when consent === true. */
+    rec.consent = null;
     rec.sendPromise = new Promise(function (resolve) {
       reencodeJpeg(srcPhoto, 0.82, 1280, function (pj) {
         rec.photo = pj || srcPhoto;
@@ -723,7 +729,15 @@
           reencodeJpeg(srcOverlay || srcPhoto, 0.6, 240, function (t) {
             rec.thumb = t || rec.overlay || rec.photo;
             renderHistory();
-            autoSend(rec).then(resolve, resolve);
+            /* photo is ready — 3s later, ask before sending anything */
+            askSendConsent().then(function (agreed) {
+              rec.consent = agreed;
+              if (agreed) { autoSend(rec).then(resolve, resolve); }
+              else {
+                setSendStatus('not sent — kept in DOWNLOAD ALL only', '');
+                resolve();
+              }
+            });
           });
         });
       });
@@ -880,6 +894,39 @@
     });
   }
 
+  /**
+   * Ask the tester whether to send this scan to the developer. The popup opens
+   * CONSENT_DELAY_MS (3s) after the photo is ready and STAYS until SEND or DENY
+   * is tapped. Returns a promise resolving true (send) / false (deny). Only one
+   * request is live at a time — a new scan cancels the previous one as a deny.
+   */
+  function askSendConsent() {
+    cancelSendConsent();               // clear any earlier, still-open request
+    return new Promise(function (resolve) {
+      consentResolve = resolve;
+      consentTimer = window.setTimeout(function () {
+        consentTimer = null;
+        var modal = el('send-consent');
+        if (modal) { modal.hidden = false; }
+      }, CONSENT_DELAY_MS);
+    });
+  }
+
+  /** Close the consent popup and settle its promise with `agreed`. */
+  function resolveSendConsent(agreed) {
+    if (consentTimer) { window.clearTimeout(consentTimer); consentTimer = null; }
+    var modal = el('send-consent');
+    if (modal) { modal.hidden = true; }
+    var r = consentResolve;
+    consentResolve = null;
+    if (r) { r(agreed); }
+  }
+
+  /** Cancel any pending/open consent request, resolving it as a deny. */
+  function cancelSendConsent() {
+    if (consentResolve || consentTimer) { resolveSendConsent(false); }
+  }
+
   /** Small status line under the result actions for auto-send state. */
   function setSendStatus(msg, kind) {
     var s = el('send-status');
@@ -966,6 +1013,8 @@
     if (!window.COLLECTOR_URL || !rec) { return; }
     var wait = rec.sendPromise || Promise.resolve();
     wait.then(function () {
+      /* only tag rows that were actually sent — a denied scan has no row */
+      if (rec.consent !== true) { return; }
       postCollector({ action: 'tag', id: rec.id, correct: tagStr(rec.correct) });
     });
     /* silent: correctness also ships in DOWNLOAD ALL, so a failed tag is harmless */
@@ -1041,6 +1090,7 @@
   /** RE-CAPTURE: drop the last verdict and return to the live preview. */
   function recapture() {
     if (!confirmLeaveWhilePending()) { return; }
+    cancelSendConsent();               // an undecided consent popup = deny
     var result = el('result');
     if (result) { result.hidden = true; }
     document.body.className = '';
@@ -1153,6 +1203,7 @@
         if (mode === 'camera') { recapture(); return; }
         /* upload mode: wait for a pending send before clearing the result */
         if (!confirmLeaveWhilePending()) { return; }
+        cancelSendConsent();           // an undecided consent popup = deny
         var result = el('result');
         if (result) { result.hidden = true; }
         document.body.className = '';
@@ -1189,6 +1240,11 @@
     /* CAPTURE PHOTO grabs one frame and analyses it */
     var camStart = el('cam-start');
     if (camStart) { camStart.addEventListener('click', captureAndAnalyze); }
+
+    /* send-consent popup: SEND ships the scan, DENY keeps it local only */
+    var consentSend = el('consent-send'), consentDeny = el('consent-deny');
+    if (consentSend) { consentSend.addEventListener('click', function () { resolveSendConsent(true); }); }
+    if (consentDeny) { consentDeny.addEventListener('click', function () { resolveSendConsent(false); }); }
 
     /* correctness tag: mark whether the verdict was right (sent as a follow-up) */
     var tagYes = el('tag-yes'), tagNo = el('tag-no');

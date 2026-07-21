@@ -356,6 +356,48 @@ body {
 .namegate__err { margin: 10px 0 0; color: var(--alert); font-size: 12px; letter-spacing: .06em; }
 .namegate__go { width: 100%; margin-top: 20px; align-self: stretch; text-align: center; }
 
+/* ---------- send consent (a bottom-right sticker, asked 3s after capture) ----
+   Non-blocking: no backdrop, so the rest of the page stays fully interactive.  */
+.sendconsent {
+  position: fixed; right: 20px; bottom: 20px; z-index: 60;
+  max-width: min(340px, calc(100vw - 40px));
+}
+.sendconsent[hidden] { display: none; }
+.sendconsent__card {
+  background: var(--panel); border: 1px solid var(--acid);
+  border-radius: 14px; box-shadow: var(--shadow);
+  padding: 18px 18px 16px;
+  /* slide + overshoot in, then keep pulsing a glow for ~10s so it grabs attention */
+  animation:
+    sticker-in .42s cubic-bezier(.2,.9,.3,1.35) both,
+    sticker-glow 1s ease-out .42s 10 both;
+}
+@keyframes sticker-in {
+  0%   { opacity: 0; transform: translateY(40px) scale(.9); }
+  60%  { opacity: 1; transform: translateY(-6px) scale(1.03); }
+  100% { opacity: 1; transform: translateY(0)    scale(1); }
+}
+@keyframes sticker-glow {
+  0%   { box-shadow: var(--shadow), 0 0 0 0 rgba(198,242,78,.55); }
+  100% { box-shadow: var(--shadow), 0 0 0 14px rgba(198,242,78,0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .sendconsent__card { animation: sticker-in .2s ease-out both; }
+}
+.sendconsent__title {
+  margin: 0 0 6px; font-family: var(--display); font-weight: 800;
+  font-size: 17px; letter-spacing: .01em;
+}
+.sendconsent__lede { margin: 0; color: var(--fog); font-size: 12.5px; line-height: 1.5; }
+.sendconsent__actions {
+  display: flex; gap: 10px; margin-top: 16px;
+}
+.sendconsent__actions .again { flex: 1; text-align: center; padding: 10px 14px; }
+
+@media (max-width: 520px) {
+  .sendconsent { left: 12px; right: 12px; bottom: 12px; max-width: none; }
+}
+
 /* ---------- correctness tag ("was this correct?") ---------- */
 .ctag { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
 .ctag__q { color: var(--fog); font-size: 12.5px; letter-spacing: .08em; }

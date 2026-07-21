@@ -28,6 +28,24 @@
     </div>
   </div>
 
+  <!-- SEND CONSENT — a non-blocking sticker that slides in bottom-right 3s after
+       each capture and stays until acted on; the page stays fully usable. The
+       photo is only sent if the tester taps SEND (DENY keeps it local). -->
+  <div id="send-consent" class="sendconsent" role="dialog"
+       aria-labelledby="sendconsent-title" hidden>
+    <div class="sendconsent__card">
+      <h2 id="sendconsent-title" class="sendconsent__title">Send to developer?</h2>
+      <p class="sendconsent__lede">
+        Send this scan (your photo and its verdict) to the developer?
+        Nothing is sent unless you tap&nbsp;SEND.
+      </p>
+      <div class="sendconsent__actions">
+        <button id="consent-deny" class="again again--ghost" type="button">DENY</button>
+        <button id="consent-send" class="again" type="button">SEND</button>
+      </div>
+    </div>
+  </div>
+
   <header class="masthead">
     <div class="masthead__mark">
       <span class="dot" aria-hidden="true"></span>
